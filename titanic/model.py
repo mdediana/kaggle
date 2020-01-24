@@ -5,12 +5,12 @@ from statistics import mean
 from itertools import product
 
 import pandas as pd
-from sklearn.pipeline import make_pipeline, Pipeline
+from sklearn.pipeline import make_pipeline
 from sklearn.compose import make_column_transformer
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.model_selection import cross_val_score, GridSearchCV, StratifiedKFold
+from sklearn.ensemble import GradientBoostingClassifier, AdaBoostClassifier
+from sklearn.model_selection import cross_val_score
 from xgboost import XGBClassifier
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ def apply_imputer(imputer, X, column):
 
 
 # For xgboost_params, see https://xgboost.readthedocs.io/en/latest/python/python_api.html#module-xgboost.sklearn
-def train(training_filename, xgboost_params={}):
+def train(training_filename, model_class, model_params={}):
     df = read_csv(training_filename)
     X = df[['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']]
     y = df['Survived']
@@ -73,15 +73,14 @@ def train(training_filename, xgboost_params={}):
         remainder='passthrough',
     )
 
-    # model = GradientBoostingClassifier(
-    #     n_estimators=500, learning_rate=0.01, max_depth=5, max_leaf_nodes=4, random_state=0)
-    params = {**xgboost_params, **{'random_state': 0}}
-    model = XGBClassifier(**params)
+    params = {**model_params, **{'random_state': 0}}
+    model = model_class(**params)
     pipeline = make_pipeline(column_trans, model)
     pipeline.fit(X, y)
 
     # Multiply by -1 since sklearn calculates *negative* MAE
-    scores = -1 * cross_val_score(pipeline, X, y, cv=5, scoring='neg_mean_absolute_error')
+    # scores = -1 * cross_val_score(pipeline, X, y, cv=5, scoring='neg_mean_absolute_error')
+    scores = cross_val_score(pipeline, X, y, cv=5, scoring='accuracy')
 
     return pipeline, scores
 
@@ -138,22 +137,38 @@ if __name__ == '__main__':
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-    xgboost_params = {
-        'max_depth': 2,
-        'learning_rate': 1,
-        'n_estimators': 50,
-        'gamma': 0.05,
-        'min_child_weight': 3,
-        'subsample': 0.5,
-        'colsample_bytree': 0.8,
-        'reg_alpha': 1.0,
-        'reg_lambda': 0.01
+    MODEL_PARAMS = {
+        XGBClassifier: {
+            'max_depth': 2,
+            'learning_rate': 1,
+            'n_estimators': 50,
+            'gamma': 0.05,
+            'min_child_weight': 3,
+            'subsample': 0.5,
+            'colsample_bytree': 0.8,
+            'reg_alpha': 1.0,
+            'reg_lambda': 0.01
+        },
+        GradientBoostingClassifier: {
+            # 'n_estimators': 500,
+            # # 'learning_rate': 0.01,
+            # # 'max_depth': 5,
+            # # 'max_leaf_nodes': 4
+        },
+        AdaBoostClassifier: {
+            # 'n_estimators': 5000,
+            # # 'learning_rate': 0.1,
+        },
     }
+    model_class = GradientBoostingClassifier
+    # model_class = AdaBoostClassifier
+    # model_class = RandomForestClassifier
     if args.command == 'train':
         logger.setLevel(logging.DEBUG)
         ch.setLevel(logging.DEBUG)
-        # train(args.training_set_file)
-        search_xgboost_hyperparams(args.training_set_file)
+        _, scores = train(args.training_set_file, model_class, MODEL_PARAMS.get(model_class, {}))
+        logger.info('%s - Score: %f+/-%f %s', model_class.__name__, scores.mean(), scores.std(), scores)
+        # search_xgboost_hyperparams(args.training_set_file)
     elif args.command == 'predict':
-        pipeline, _ = train(args.training_set_file, xgboost_params)
+        pipeline, _ = train(args.training_set_file, model_class, MODEL_PARAMS.get(model_class, {}))
         predict(pipeline, args.predict_file)
