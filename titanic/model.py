@@ -19,49 +19,17 @@ logger = logging.getLogger(__name__)
 def read_csv(filename):
     df = pd.read_csv(filename)
     df.set_index('PassengerId', inplace=True)
-    return df
-
-
-def format_cols(df):
-    df.Embarked.replace({'C': 0, 'Q': 1, 'S': 2, None: 0}, inplace=True)
-    df.Fare.fillna(df.Fare.median(), inplace=True)
-    df.Age.fillna(df.Age.median(), inplace=True)
-    # children = df[df.Age < 18]
-    # male_adult = df[(df.Sex == 'male') & (df.Age >= 18)]
-    # female_adult = df[(df.Sex == 'female') & (df.Age >= 18)]
-    # # Male children ages
+    # Set missing boy ages - better imputation of ages hurts accuracy (?)
+    # childrens_age_median = df[df.Age < 18].Age.median()
     # mask = df.Name.str.contains('Master') & df.Age.isnull()
-    # df.loc[mask, 'Age'] = df.loc[mask, 'Age'].fillna(children.Age.median())
-    # # Male adult ages - need to come after filling children ages
-    # mask = (df.Sex == 'male') & df.Age.isnull()
-    # df.loc[mask, 'Age'] = df.loc[mask, 'Age'].fillna(male_adult.Age.median())
-    # # Female ages
-    # mask = (df.Sex == 'female') & df.Age.isnull()
-    # df.loc[mask, 'Age'] = df.loc[mask, 'Age'].fillna(female_adult.Age.median())
-    # Sex must come after ages
-    df.Sex.replace({'female': 0, 'male': 1}, inplace=True)
-
-
-def prepare_X_simple(df):
-    # Hypothesis:
-    # - Pclass and Fare are correlated
-    # - Group size does not matter
-    # - Embarked does not matter
-    format_cols(df)
-    df['Alone'] = (df['SibSp'] == 0) & (df['Parch'] == 0)
-    X = df[['Pclass', 'Sex', 'Age', 'Alone']]
-    return X
-
-
-def apply_imputer(imputer, X, column):
-    return imputer.fit_transform(X[column].values.reshape(-1, 1))
-
-
-# For xgboost_params, see https://xgboost.readthedocs.io/en/latest/python/python_api.html#module-xgboost.sklearn
-def train(training_filename, model_class, model_params={}):
-    df = read_csv(training_filename)
+    # df.at[df[mask].index, 'Age'] = childrens_age_median
     X = df[['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']]
-    y = df['Survived']
+    y = df['Survived'] if 'Survived' in df else None
+    return X, y
+
+
+def train(training_filename, model_class, model_params={}):
+    X, y = read_csv(training_filename)
 
     embarked_trans = make_pipeline(
             SimpleImputer(strategy='most_frequent'),
@@ -86,6 +54,7 @@ def train(training_filename, model_class, model_params={}):
 
 
 def search_xgboost_hyperparams(training_filename):
+    # For xgboost_params, see https://xgboost.readthedocs.io/en/latest/python/python_api.html#module-xgboost.sklearn
     # https://machinelearningmastery.com/configure-gradient-boosting-algorithm/
     xgboost_params = {
         # 'max_depth': [2, 3, 4, 6, 8, 10],
@@ -123,8 +92,7 @@ def search_xgboost_hyperparams(training_filename):
 
 
 def predict(pipeline, test_filename):
-    df = read_csv(test_filename)
-    X = df[['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']]
+    X, _ = read_csv(test_filename)
     preds = pipeline.predict(X)
     preds_df = pd.DataFrame(index=X.index, data={'Survived': preds})
     preds_df.to_csv(sys.stdout)
@@ -137,9 +105,9 @@ if __name__ == '__main__':
     parser.add_argument('--predict-file', help='Test set file', default='test.csv')
     args = parser.parse_args()
 
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
     ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
+    ch.setLevel(logging.DEBUG)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     ch.setFormatter(formatter)
     logger.addHandler(ch)
@@ -157,9 +125,10 @@ if __name__ == '__main__':
             # 'reg_lambda': 0.01
         },
         GradientBoostingClassifier: {
-            # 'n_estimators': 500,
-            # 'learning_rate': 0.1,
-            'max_depth': 3,
+            # 'n_estimators': 175,
+            # 'learning_rate': 0.05,
+            # 'max_depth': 3,
+            # 'max_features': 'sqrt',
             # # 'max_leaf_nodes': 4
         },
         AdaBoostClassifier: {
@@ -176,14 +145,12 @@ if __name__ == '__main__':
     # model_class = AdaBoostClassifier
     # model_class = RandomForestClassifier
     if args.command == 'train':
-        logger.setLevel(logging.DEBUG)
-        ch.setLevel(logging.DEBUG)
         _, scores = train(args.training_set_file, model_class, MODEL_PARAMS.get(model_class, {}))
         logger.info('%s - Score: %f+/-%f %s', model_class.__name__, scores.mean(), scores.std(), scores)
     elif args.command == 'predict':
+        logger.setLevel(logging.INFO)
+        ch.setLevel(logging.INFO)
         pipeline, _ = train(args.training_set_file, model_class, MODEL_PARAMS.get(model_class, {}))
         predict(pipeline, args.predict_file)
     elif args.command == 'search':
-        logger.setLevel(logging.DEBUG)
-        ch.setLevel(logging.DEBUG)
         search_xgboost_hyperparams(args.training_set_file)
