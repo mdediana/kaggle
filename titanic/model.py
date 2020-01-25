@@ -10,50 +10,101 @@ from sklearn.compose import make_column_transformer
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.ensemble import GradientBoostingClassifier, AdaBoostClassifier, RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsTransformer
 from sklearn.model_selection import cross_val_score
 from xgboost import XGBClassifier
+
+MODEL_PARAMS = {
+    XGBClassifier: {
+        'max_depth': 3,
+        'learning_rate': 0.05,
+        'n_estimators': 500,
+        # 'gamma': 0.05,
+        # 'min_child_weight': 3,
+        # 'subsample': 0.5,
+        # 'colsample_bytree': 0.8,
+        # 'reg_alpha': 1.0,
+        # 'reg_lambda': 0.01,
+        'random_state': 0,
+    },
+    GradientBoostingClassifier: {
+        # 'n_estimators': 150,
+        # 'learning_rate': 0.05,
+        # 'max_depth': 3,
+        # 'max_features': 'sqrt',
+        # 'max_leaf_nodes': 4,
+        'random_state': 0,
+    },
+    AdaBoostClassifier: {
+        # 'n_estimators': 5000,
+        # 'learning_rate': 0.1,
+        'random_state': 0,
+    },
+    RandomForestClassifier: {
+        'n_estimators': 5000,
+        'max_depth': 3,
+        'random_state': 0,
+    },
+    KNeighborsClassifier: {
+        'n_neighbors': 3,
+    },
+    KNeighborsTransformer: {
+    },
+}
+# MODEL_CLASS = XGBClassifier
+MODEL_CLASS = GradientBoostingClassifier
+# MODEL_CLASS = AdaBoostClassifier
+# MODEL_CLASS = RandomForestClassifier
+# MODEL_CLASS = KNeighborsClassifier
+# MODEL_CLASS = KNeighborsTransformer
 
 logger = logging.getLogger(__name__)
 
 
-def read_csv(filename):
+def _read_csv(filename):
     df = pd.read_csv(filename)
     df.set_index('PassengerId', inplace=True)
     # Set missing boy ages - better imputation of ages hurts accuracy (?)
     # childrens_age_median = df[df.Age < 18].Age.median()
     # mask = df.Name.str.contains('Master') & df.Age.isnull()
     # df.at[df[mask].index, 'Age'] = childrens_age_median
+    # df['Relatives'] = df.SibSp + df.Parch
+    # df['FarePerPerson'] = df.Fare / (df.Relatives + 1)
     X = df[['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']]
     y = df['Survived'] if 'Survived' in df else None
     return X, y
 
 
-def train(training_filename, model_class, model_params={}):
-    X, y = read_csv(training_filename)
-
+def _column_transformer():
     embarked_trans = make_pipeline(
             SimpleImputer(strategy='most_frequent'),
             OneHotEncoder())
-    column_trans = make_column_transformer(
+    return make_column_transformer(
         (embarked_trans, ['Embarked']),
         (OneHotEncoder(), ['Pclass', 'Sex']),
         (SimpleImputer(strategy='median'), ['Fare', 'Age']),
         remainder='passthrough',
     )
 
-    params = {**model_params, **{'random_state': 0}}
-    model = model_class(**params)
-    pipeline = make_pipeline(column_trans, model)
-    pipeline.fit(X, y)
 
+def _train(X, y, model_class, model_params={}):
+    model = model_class(**model_params)
+    pipeline = make_pipeline(_column_transformer(), model)
+    pipeline.fit(X, y)
     # Multiply by -1 since sklearn calculates *negative* MAE
     # scores = -1 * cross_val_score(pipeline, X, y, cv=5, scoring='neg_mean_absolute_error')
     scores = cross_val_score(pipeline, X, y, cv=5, scoring='accuracy')
-
     return pipeline, scores
 
 
-def search_xgboost_hyperparams(training_filename):
+def _predict(pipeline, X):
+    preds = pipeline.predict(X)
+    preds_df = pd.DataFrame(index=X.index, data={'Survived': preds})
+    return preds_df
+
+
+def search_xgboost_hyperparams(training_set_file):
+    X_train, y_train = _read_csv(training_set_file)
     # For xgboost_params, see https://xgboost.readthedocs.io/en/latest/python/python_api.html#module-xgboost.sklearn
     # https://machinelearningmastery.com/configure-gradient-boosting-algorithm/
     xgboost_params = {
@@ -76,7 +127,7 @@ def search_xgboost_hyperparams(training_filename):
     best_params = []
     for i, combination in enumerate(combinations, 1):
         params = dict(zip(xgboost_params.keys(), combination))
-        _, scores = train(training_filename, XGBClassifier, params)
+        _, scores = _train(X_train, y_train, XGBClassifier, params)
         score = scores.mean()
         std = scores.std()
         if score > best_score:
@@ -91,18 +142,25 @@ def search_xgboost_hyperparams(training_filename):
         logger.info(params)
 
 
-def predict(pipeline, test_filename):
-    X, _ = read_csv(test_filename)
-    preds = pipeline.predict(X)
-    preds_df = pd.DataFrame(index=X.index, data={'Survived': preds})
-    preds_df.to_csv(sys.stdout)
+def train(training_set_file, model_class=MODEL_CLASS):
+    X_train, y_train = _read_csv(training_set_file)
+    _, scores = _train(X_train, y_train, model_class, MODEL_PARAMS.get(model_class, {}))
+    logger.info('%s - Score: %f+/-%f %s', model_class.__name__, scores.mean(), scores.std(), scores)
+
+
+def predict(training_set_file, test_set_file, model_class=MODEL_CLASS):
+    X_train, y_train = _read_csv(training_set_file)
+    pipeline, _ = _train(X_train, y_train, model_class, MODEL_PARAMS.get(model_class, {}))
+    X_test, _ = _read_csv(test_set_file)
+    preds = _predict(pipeline, X_test)
+    preds.to_csv(sys.stdout)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('command', help='Command to run', choices=['train', 'predict', 'search'], default='train')
     parser.add_argument('--training-set-file', help='Training set file', default='train.csv')
-    parser.add_argument('--predict-file', help='Test set file', default='test.csv')
+    parser.add_argument('--test-set-file', help='Test set file', default='test.csv')
     args = parser.parse_args()
 
     logger.setLevel(logging.DEBUG)
@@ -112,45 +170,11 @@ if __name__ == '__main__':
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-    MODEL_PARAMS = {
-        XGBClassifier: {
-            'max_depth': 3,
-            'learning_rate': 0.05,
-            'n_estimators': 500,
-            # 'gamma': 0.05,
-            # 'min_child_weight': 3,
-            # 'subsample': 0.5,
-            # 'colsample_bytree': 0.8,
-            # 'reg_alpha': 1.0,
-            # 'reg_lambda': 0.01
-        },
-        GradientBoostingClassifier: {
-            # 'n_estimators': 175,
-            # 'learning_rate': 0.05,
-            # 'max_depth': 3,
-            # 'max_features': 'sqrt',
-            # # 'max_leaf_nodes': 4
-        },
-        AdaBoostClassifier: {
-            # 'n_estimators': 5000,
-            # # 'learning_rate': 0.1,
-        },
-        RandomForestClassifier: {
-            'n_estimators': 5000,
-            'max_depth': 3,
-        },
-    }
-    # model_class = XGBClassifier
-    model_class = GradientBoostingClassifier
-    # model_class = AdaBoostClassifier
-    # model_class = RandomForestClassifier
     if args.command == 'train':
-        _, scores = train(args.training_set_file, model_class, MODEL_PARAMS.get(model_class, {}))
-        logger.info('%s - Score: %f+/-%f %s', model_class.__name__, scores.mean(), scores.std(), scores)
+        train(args.training_set_file)
     elif args.command == 'predict':
         logger.setLevel(logging.INFO)
         ch.setLevel(logging.INFO)
-        pipeline, _ = train(args.training_set_file, model_class, MODEL_PARAMS.get(model_class, {}))
-        predict(pipeline, args.predict_file)
+        predict(args.training_set_file, args.test_set_file)
     elif args.command == 'search':
         search_xgboost_hyperparams(args.training_set_file)
