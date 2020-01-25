@@ -10,7 +10,7 @@ from sklearn.compose import make_column_transformer
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.ensemble import GradientBoostingClassifier, AdaBoostClassifier, RandomForestClassifier
-from sklearn.neighbors import KNeighborsClassifier, KNeighborsTransformer
+from sklearn.neighbors import KNeighborsClassifier, NeighborhoodComponentsAnalysis
 from sklearn.model_selection import cross_val_score
 from xgboost import XGBClassifier
 
@@ -46,9 +46,8 @@ MODEL_PARAMS = {
         'random_state': 0,
     },
     KNeighborsClassifier: {
-        'n_neighbors': 3,
-    },
-    KNeighborsTransformer: {
+        'n_neighbors': 50,
+        'algorithm': 'brute',
     },
 }
 # MODEL_CLASS = XGBClassifier
@@ -153,6 +152,7 @@ def search_xgboost_hyperparams(training_set_file):
 
 
 def _predict_knn(X_train, y_train, X_test=None):
+    # Prepare pipeline
     age_trans = make_pipeline(
         SimpleImputer(strategy='median'),
         StandardScaler(),
@@ -162,12 +162,18 @@ def _predict_knn(X_train, y_train, X_test=None):
         (OneHotEncoder(), ['Pclass', 'Sex']),
         remainder='passthrough',
     )
-    # X_knn = X_train[['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']]
+    nca = NeighborhoodComponentsAnalysis(random_state=0)
+    model_params = MODEL_PARAMS.get(KNeighborsClassifier, {})
+    model = KNeighborsClassifier(**model_params)
+    pipeline = make_pipeline(column_trans, nca, model)
+    # Train
     X_train_knn = X_train[['Pclass', 'Sex', 'Age']]
-    pipeline, scores = _train(X_train_knn, y_train, KNeighborsClassifier, column_transformer=column_trans)
+    pipeline.fit(X_train_knn, y_train)
+    scores = cross_val_score(pipeline, X_train_knn, y_train, cv=5, scoring='accuracy')
     logger.info('%s - Score: %f+/-%f %s', KNeighborsClassifier.__name__, scores.mean(), scores.std(), scores)
     preds = _predict(pipeline, X_train_knn)
     X_train = X_train.join(preds, rsuffix='KNN_')
+    # Predict
     if X_test is not None:
         X_test_knn = X_test[['Pclass', 'Sex', 'Age']]
         preds = _predict(pipeline, X_test_knn)
@@ -186,7 +192,8 @@ def predict(training_set_file, test_set_file, model_class=MODEL_CLASS):
     X_train, y_train = _read_csv(training_set_file)
     X_test, _ = _read_csv(test_set_file)
     X_train, X_test = _predict_knn(X_train, y_train, X_test)
-    pipeline, _ = _train(X_train, y_train, model_class)
+    pipeline, scores = _train(X_train, y_train, model_class)
+    logger.info('%s - Score: %f+/-%f %s', model_class.__name__, scores.mean(), scores.std(), scores)
     preds = _predict(pipeline, X_test)
     preds.to_csv(sys.stdout)
 
