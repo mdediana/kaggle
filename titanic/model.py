@@ -14,48 +14,42 @@ from sklearn.neighbors import KNeighborsClassifier, NeighborhoodComponentsAnalys
 from sklearn.model_selection import cross_val_score
 from xgboost import XGBClassifier
 
-MODEL_PARAMS = {
-    XGBClassifier: {
-        'max_depth': 3,
-        'learning_rate': 0.05,
-        'n_estimators': 500,
-        # 'gamma': 0.05,
-        # 'min_child_weight': 3,
-        # 'subsample': 0.5,
-        # 'colsample_bytree': 0.8,
-        # 'reg_alpha': 1.0,
-        # 'reg_lambda': 0.01,
-        'random_state': 0,
-    },
-    GradientBoostingClassifier: {
-        # 'n_estimators': 150,
-        # 'learning_rate': 0.05,
-        # 'max_depth': 3,
-        # 'max_features': 'sqrt',
-        # 'max_leaf_nodes': 4,
-        'random_state': 0,
-    },
-    AdaBoostClassifier: {
-        # 'n_estimators': 5000,
-        # 'learning_rate': 0.1,
-        'random_state': 0,
-    },
-    RandomForestClassifier: {
-        'n_estimators': 5000,
-        'max_depth': 3,
-        'random_state': 0,
-    },
-    KNeighborsClassifier: {
-        'n_neighbors': 50,
-        'algorithm': 'brute',
-    },
-}
-# MODEL_CLASS = XGBClassifier
-MODEL_CLASS = GradientBoostingClassifier
-# MODEL_CLASS = AdaBoostClassifier
-# MODEL_CLASS = RandomForestClassifier
-# MODEL_CLASS = KNeighborsClassifier
-# MODEL_CLASS = KNeighborsTransformer
+CLF_XGB = XGBClassifier(
+        max_depth=3,
+        learning_rate=0.05,
+        n_estimators=500,
+        # gamma=0.05,
+        # min_child_weight=3,
+        # subsample=0.5,
+        # colsample_bytree=0.8,
+        # reg_alpha=1.0,
+        # reg_lambda=0.01,
+        random_state=0,
+)
+CLF_GRADIENT_BOOSTING = GradientBoostingClassifier(
+    # n_estimators=150,
+    # learning_rate=0.05,
+    # max_depth=3,
+    # max_features='sqrt',
+    # max_leaf_nodes=4,
+    random_state=0,
+    # TODO: Try adjusting lambda, gamma and colsample to avoid overfitting
+)
+CLF_ADA_BOOST = AdaBoostClassifier(
+    # n_estimators=5000,
+    # learning_rate=0.1,
+    random_state=0,
+)
+CLF_RANDOM_FOREST = RandomForestClassifier(
+    n_estimators=5000,
+    max_depth=3,
+    random_state=0,
+)
+CLF_KNEIGHBORS = KNeighborsClassifier(
+    n_neighbors=50,
+    algorithm='brute',
+)
+MODEL = CLF_GRADIENT_BOOSTING
 
 logger = logging.getLogger(__name__)
 
@@ -92,12 +86,9 @@ def _column_transformer():
     )
 
 
-def _train(X, y, model_class, model_params=None, column_transformer=None):
-    if model_params is None:
-        model_params = MODEL_PARAMS.get(model_class, {})
+def _train(X, y, model, column_transformer=None):
     if column_transformer is None:
         column_transformer = _column_transformer()
-    model = model_class(**model_params)
     pipeline = make_pipeline(column_transformer, model)
     pipeline.fit(X, y)
     # Multiply by -1 since sklearn calculates *negative* MAE
@@ -163,14 +154,13 @@ def _predict_knn(X_train, y_train, X_test=None):
         remainder='passthrough',
     )
     nca = NeighborhoodComponentsAnalysis(random_state=0)
-    model_params = MODEL_PARAMS.get(KNeighborsClassifier, {})
-    model = KNeighborsClassifier(**model_params)
+    model = CLF_KNEIGHBORS
     pipeline = make_pipeline(column_trans, nca, model)
     # Train
     X_train_knn = X_train[['Pclass', 'Sex', 'Age']]
     pipeline.fit(X_train_knn, y_train)
     scores = cross_val_score(pipeline, X_train_knn, y_train, cv=5, scoring='accuracy')
-    logger.info('%s - Score: %f+/-%f %s', KNeighborsClassifier.__name__, scores.mean(), scores.std(), scores)
+    logger.info('%s - Score: %f+/-%f %s', type(model).__name__, scores.mean(), scores.std(), scores)
     preds = _predict(pipeline, X_train_knn)
     X_train = X_train.join(preds, rsuffix='KNN_')
     # Predict
@@ -181,19 +171,19 @@ def _predict_knn(X_train, y_train, X_test=None):
     return X_train, X_test
 
 
-def train(training_set_file, model_class=MODEL_CLASS):
+def train(training_set_file, model=MODEL):
     X_train, y_train = _read_csv(training_set_file)
     X_train, _ = _predict_knn(X_train, y_train)
-    _, scores = _train(X_train, y_train, model_class)
-    logger.info('%s - Score: %f+/-%f %s', model_class.__name__, scores.mean(), scores.std(), scores)
+    _, scores = _train(X_train, y_train, model)
+    logger.info('%s - Score: %f+/-%f %s', type(model).__name__, scores.mean(), scores.std(), scores)
 
 
-def predict(training_set_file, test_set_file, model_class=MODEL_CLASS):
+def predict(training_set_file, test_set_file, model=MODEL):
     X_train, y_train = _read_csv(training_set_file)
     X_test, _ = _read_csv(test_set_file)
     X_train, X_test = _predict_knn(X_train, y_train, X_test)
-    pipeline, scores = _train(X_train, y_train, model_class)
-    logger.info('%s - Score: %f+/-%f %s', model_class.__name__, scores.mean(), scores.std(), scores)
+    pipeline, scores = _train(X_train, y_train, model)
+    logger.info('%s - Score: %f+/-%f %s', type(model).__name__, scores.mean(), scores.std(), scores)
     preds = _predict(pipeline, X_test)
     preds.to_csv(sys.stdout)
 
