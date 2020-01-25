@@ -8,7 +8,7 @@ import pandas as pd
 from sklearn.pipeline import make_pipeline
 from sklearn.compose import make_column_transformer
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.ensemble import GradientBoostingClassifier, AdaBoostClassifier, RandomForestClassifier
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsTransformer
 from sklearn.model_selection import cross_val_score
@@ -79,17 +79,27 @@ def _column_transformer():
     embarked_trans = make_pipeline(
             SimpleImputer(strategy='most_frequent'),
             OneHotEncoder())
+    age_trans = make_pipeline(
+        SimpleImputer(strategy='median'),
+        StandardScaler(),
+    )
     return make_column_transformer(
         (embarked_trans, ['Embarked']),
+        (age_trans, ['Age']),
         (OneHotEncoder(), ['Pclass', 'Sex']),
-        (SimpleImputer(strategy='median'), ['Fare', 'Age']),
+        (SimpleImputer(strategy='median'), ['Fare']),
+        (StandardScaler(), ['SibSp', 'Parch']),
         remainder='passthrough',
     )
 
 
-def _train(X, y, model_class, model_params={}):
+def _train(X, y, model_class, model_params=None, column_transformer=None):
+    if model_params is None:
+        model_params = MODEL_PARAMS.get(model_class, {})
+    if column_transformer is None:
+        column_transformer = _column_transformer()
     model = model_class(**model_params)
-    pipeline = make_pipeline(_column_transformer(), model)
+    pipeline = make_pipeline(column_transformer, model)
     pipeline.fit(X, y)
     # Multiply by -1 since sklearn calculates *negative* MAE
     # scores = -1 * cross_val_score(pipeline, X, y, cv=5, scoring='neg_mean_absolute_error')
@@ -142,16 +152,41 @@ def search_xgboost_hyperparams(training_set_file):
         logger.info(params)
 
 
+def _predict_knn(X_train, y_train, X_test=None):
+    age_trans = make_pipeline(
+        SimpleImputer(strategy='median'),
+        StandardScaler(),
+    )
+    column_trans = make_column_transformer(
+        (age_trans, ['Age']),
+        (OneHotEncoder(), ['Pclass', 'Sex']),
+        remainder='passthrough',
+    )
+    # X_knn = X_train[['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']]
+    X_train_knn = X_train[['Pclass', 'Sex', 'Age']]
+    pipeline, scores = _train(X_train_knn, y_train, KNeighborsClassifier, column_transformer=column_trans)
+    logger.info('%s - Score: %f+/-%f %s', KNeighborsClassifier.__name__, scores.mean(), scores.std(), scores)
+    preds = _predict(pipeline, X_train_knn)
+    X_train = X_train.join(preds, rsuffix='KNN_')
+    if X_test is not None:
+        X_test_knn = X_test[['Pclass', 'Sex', 'Age']]
+        preds = _predict(pipeline, X_test_knn)
+        X_test = X_test.join(preds, rsuffix='KNN_')
+    return X_train, X_test
+
+
 def train(training_set_file, model_class=MODEL_CLASS):
     X_train, y_train = _read_csv(training_set_file)
-    _, scores = _train(X_train, y_train, model_class, MODEL_PARAMS.get(model_class, {}))
+    X_train, _ = _predict_knn(X_train, y_train)
+    _, scores = _train(X_train, y_train, model_class)
     logger.info('%s - Score: %f+/-%f %s', model_class.__name__, scores.mean(), scores.std(), scores)
 
 
 def predict(training_set_file, test_set_file, model_class=MODEL_CLASS):
     X_train, y_train = _read_csv(training_set_file)
-    pipeline, _ = _train(X_train, y_train, model_class, MODEL_PARAMS.get(model_class, {}))
     X_test, _ = _read_csv(test_set_file)
+    X_train, X_test = _predict_knn(X_train, y_train, X_test)
+    pipeline, _ = _train(X_train, y_train, model_class)
     preds = _predict(pipeline, X_test)
     preds.to_csv(sys.stdout)
 
