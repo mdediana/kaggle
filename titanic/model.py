@@ -15,16 +15,16 @@ from sklearn.model_selection import cross_val_score
 from xgboost import XGBClassifier
 
 CLF_XGB = XGBClassifier(
-        max_depth=3,
-        learning_rate=0.05,
-        n_estimators=500,
-        # gamma=0.05,
-        # min_child_weight=3,
-        # subsample=0.5,
-        # colsample_bytree=0.8,
-        # reg_alpha=1.0,
-        # reg_lambda=0.01,
-        random_state=0,
+    # max_depth=3,
+    learning_rate=0.1,
+    n_estimators=200,
+    # gamma=0.1,
+    # min_child_weight=3,
+    # subsample=0.5,
+    colsample_bytree=0.8,
+    # reg_alpha=1.0,
+    reg_lambda=0.1,
+    random_state=0,
 )
 CLF_GRADIENT_BOOSTING = GradientBoostingClassifier(
     # n_estimators=150,
@@ -32,6 +32,7 @@ CLF_GRADIENT_BOOSTING = GradientBoostingClassifier(
     # max_depth=3,
     # max_features='sqrt',
     # max_leaf_nodes=4,
+    # ccp_alpha=0.01,
     random_state=0,
     # TODO: Try adjusting lambda, gamma and colsample to avoid overfitting
 )
@@ -41,7 +42,7 @@ CLF_ADA_BOOST = AdaBoostClassifier(
     random_state=0,
 )
 CLF_RANDOM_FOREST = RandomForestClassifier(
-    n_estimators=5000,
+    n_estimators=500,
     max_depth=3,
     random_state=0,
 )
@@ -50,6 +51,7 @@ CLF_KNEIGHBORS = KNeighborsClassifier(
     algorithm='brute',
 )
 MODEL = CLF_GRADIENT_BOOSTING
+# MODEL = CLF_XGB
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +175,7 @@ def _predict_knn(X_train, y_train, X_test=None):
 
 def train(training_set_file, model=MODEL):
     X_train, y_train = _read_csv(training_set_file)
-    X_train, _ = _predict_knn(X_train, y_train)
+    # X_train, _ = _predict_knn(X_train, y_train)
     _, scores = _train(X_train, y_train, model)
     logger.info('%s - Score: %f+/-%f %s', type(model).__name__, scores.mean(), scores.std(), scores)
 
@@ -181,10 +183,36 @@ def train(training_set_file, model=MODEL):
 def predict(training_set_file, test_set_file, model=MODEL):
     X_train, y_train = _read_csv(training_set_file)
     X_test, _ = _read_csv(test_set_file)
-    X_train, X_test = _predict_knn(X_train, y_train, X_test)
+    # X_train, X_test = _predict_knn(X_train, y_train, X_test)
     pipeline, scores = _train(X_train, y_train, model)
     logger.info('%s - Score: %f+/-%f %s', type(model).__name__, scores.mean(), scores.std(), scores)
     preds = _predict(pipeline, X_test)
+    preds.to_csv(sys.stdout)
+
+
+def predict_majority(training_set_file, test_set_file):
+    X_train, y_train = _read_csv(training_set_file)
+    X_test, _ = _read_csv(test_set_file)
+    # X_train, X_test = _predict_knn(X_train, y_train, X_test)
+    # Gradient boost
+    model = CLF_GRADIENT_BOOSTING
+    pipeline, scores = _train(X_train, y_train, model)
+    logger.info('%s - Score: %f+/-%f %s', type(model).__name__, scores.mean(), scores.std(), scores)
+    preds_1 = _predict(pipeline, X_test)
+    # Random Forest
+    model = CLF_RANDOM_FOREST
+    pipeline, scores = _train(X_train, y_train, model)
+    logger.info('%s - Score: %f+/-%f %s', type(model).__name__, scores.mean(), scores.std(), scores)
+    preds_2 = _predict(pipeline, X_test)
+    # KNN
+    _, X_test_knn = _predict_knn(X_train, y_train, X_test)
+    preds_3 = X_test_knn[['Survived']].copy()
+    preds_3.rename(columns={'Survived': 'Survived_knn'}, inplace=True)
+    # Results
+    preds = preds_1.join(preds_2, lsuffix='_gb', rsuffix='_rf').join(preds_3)
+    preds['Survived'] = preds.mode(axis=1)
+    # preds['Diff'] = (preds.Survived_gb == preds.Survived_rf) & (preds.Survived_rf == preds.Survived_knn)
+    preds.drop(columns=['Survived_gb', 'Survived_rf', 'Survived_knn'], inplace=True)
     preds.to_csv(sys.stdout)
 
 
