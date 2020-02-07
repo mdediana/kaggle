@@ -5,6 +5,7 @@ from itertools import product
 import math
 
 import pandas as pd
+import numpy as np
 from sklearn.pipeline import make_pipeline
 from sklearn.compose import make_column_transformer
 from sklearn.impute import SimpleImputer
@@ -68,6 +69,32 @@ def _read_csv(filename):
     X = df[['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']]
     y = df['Survived'] if 'Survived' in df else None
     return X, y
+
+
+def _predict_by_family(training_set_file, test_set_file):
+    # Solution based on https://www.kaggle.com/c/titanic/discussion/57447
+    # Read data
+    df_train = pd.read_csv(training_set_file)
+    df_train.set_index('PassengerId', inplace=True)
+    df_test = pd.read_csv(test_set_file)
+    df_test.set_index('PassengerId', inplace=True)
+    # Extract family survival
+    df_train['Family'] = df_train['Name'].str.split(',', n=1, expand=True)[0]
+    # If age is NA consider record as adult
+    without_men = df_train[~((df_train['Sex'] == 'male') &
+                             ((df_train['Age'] >= 16) | df_train['Age'].isnull()))]
+    by_family = without_men.groupby('Family')
+    def all_survived(g): return all(p == 1 for p in g)
+    def all_died(g): return all(p == 0 for p in g)
+    family_survived = by_family['Survived'].agg([('FamilySurvived', all_survived),
+                                                 ('FamilyDied', all_died)])
+    # Predict survival based on family
+    df_test['Family'] = df_test['Name'].str.split(',', n=1, expand=True)[0]
+    df_test = df_test.join(family_survived, on='Family', how='inner')  # Only records with family info
+    df_master_survived = df_test[df_test['Name'].str.contains('Master') & df_test['FamilySurvived']]
+    df_female_died = df_test[(df_test['Sex'] == 'female') & df_test['FamilyDied']]
+    return pd.concat([pd.DataFrame({'Survived': 1}, index=df_master_survived.index),
+                      pd.DataFrame({'Survived': 0}, index=df_female_died.index)])
 
 
 def _column_transformer():
@@ -173,6 +200,12 @@ def _predict_knn(X_train, y_train, X_test=None):
     return X_train, X_test
 
 
+def _predict_by_gender(X_test):
+    y = X_test.copy()
+    y['Survived'] = np.where(y['Sex'] == 'male', 0, 1)
+    return y[['Survived']]
+
+
 def train(training_set_file, model=MODEL):
     X_train, y_train = _read_csv(training_set_file)
     # X_train, _ = _predict_knn(X_train, y_train)
@@ -183,11 +216,15 @@ def train(training_set_file, model=MODEL):
 def predict(training_set_file, test_set_file, model=MODEL):
     X_train, y_train = _read_csv(training_set_file)
     X_test, _ = _read_csv(test_set_file)
-    # X_train, X_test = _predict_knn(X_train, y_train, X_test)
-    pipeline, scores = _train(X_train, y_train, model)
-    logger.info('%s - Score: %f+/-%f %s', type(model).__name__, scores.mean(), scores.std(), scores)
-    preds = _predict(pipeline, X_test)
-    preds.to_csv(sys.stdout)
+    # # X_train, X_test = _predict_knn(X_train, y_train, X_test)
+    # pipeline, scores = _train(X_train, y_train, model)
+    # logger.info('%s - Score: %f+/-%f %s', type(model).__name__, scores.mean(), scores.std(), scores)
+    # y = _predict(pipeline, X_test)
+    y = _predict_by_gender(X_test)
+    y_family = _predict_by_family(training_set_file, test_set_file)
+    y.update(y_family)
+    y['Survived'] = y['Survived'].astype(int)  # Fix type after update https://github.com/pandas-dev/pandas/issues/4094
+    y.to_csv(sys.stdout)
 
 
 def predict_majority(training_set_file, test_set_file):
