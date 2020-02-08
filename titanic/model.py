@@ -126,30 +126,6 @@ def _instantiate_model(model_name, use_best_params=True):
     return class_(**params)
 
 
-def _predict_by_family(training_set_file, test_set_file):
-    # Solution based on https://www.kaggle.com/c/titanic/discussion/57447
-    # Read data
-    df_train, _ = _read_csv(training_set_file, split_X_y=False)
-    df_test, _ = _read_csv(test_set_file)
-    # Extract family survival
-    df_train['Family'] = df_train['Name'].str.split(',', n=1, expand=True)[0]
-    # If age is NA consider record as adult
-    without_men = df_train[~((df_train['Sex'] == 'male') &
-                             ((df_train['Age'] >= 16) | df_train['Age'].isnull()))]
-    by_family = without_men.groupby('Family')
-    def all_survived(g): return all(p == 1 for p in g)
-    def all_died(g): return all(p == 0 for p in g)
-    family_survived = by_family['Survived'].agg([('FamilySurvived', all_survived),
-                                                 ('FamilyDied', all_died)])
-    # Predict survival based on family
-    df_test['Family'] = df_test['Name'].str.split(',', n=1, expand=True)[0]
-    df_test = df_test.join(family_survived, on='Family', how='inner')  # Only records with family info
-    df_master_survived = df_test[df_test['Name'].str.contains('Master') & df_test['FamilySurvived']]
-    df_female_died = df_test[(df_test['Sex'] == 'female') & df_test['FamilyDied']]
-    return pd.concat([pd.DataFrame({'Survived': 1}, index=df_master_survived.index),
-                      pd.DataFrame({'Survived': 0}, index=df_female_died.index)])
-
-
 def _column_transformer(columns, remainder='passthrough'):
     imputers = {
         'Embarked': make_pipeline(
@@ -198,28 +174,34 @@ def _predict(pipeline, X):
     return pd.DataFrame(index=X.index, data={'Survived': y})
 
 
-def search_xgboost_hyperparams(training_set_file):
-    X_train, y_train = _read_csv(training_set_file)
-    xgboost_params = PARAM_GRIDS[XGBClassifier]
-    combinations = list(product(*xgboost_params.values()))
-    logger.info('Number of combinations: %d', len(combinations))
-    best_score = 0
-    best_params = []
-    for i, combination in enumerate(combinations, 1):
-        params = dict(zip(xgboost_params.keys(), combination))
-        _, scores = _train(X_train, y_train, XGBClassifier, params)
-        score = scores.mean()
-        std = scores.std()
-        if score > best_score:
-            best_score = score
-            best_params = [params]
-        elif math.isclose(score, best_score, rel_tol=0.0001):
-            best_params.append(params)
-        logger.debug(f'{i}/{len(combinations)} {params}: {score}+/-{std} {scores} | best score: {best_score}')
-    logger.info('Best score: %f', best_score)
-    logger.info('Best params:')
-    for params in best_params:
-        logger.info(params)
+def _predict_by_family(training_set_file, test_set_file):
+    # Solution based on https://www.kaggle.com/c/titanic/discussion/57447
+    # Read data
+    df_train, _ = _read_csv(training_set_file, split_X_y=False)
+    df_test, _ = _read_csv(test_set_file)
+    # Extract family survival
+    df_train['Family'] = df_train['Name'].str.split(',', n=1, expand=True)[0]
+    # If age is NA consider record as adult
+    without_men = df_train[~((df_train['Sex'] == 'male') &
+                             ((df_train['Age'] >= 16) | df_train['Age'].isnull()))]
+    by_family = without_men.groupby('Family')
+    def all_survived(g): return all(p == 1 for p in g)
+    def all_died(g): return all(p == 0 for p in g)
+    family_survived = by_family['Survived'].agg([('FamilySurvived', all_survived),
+                                                 ('FamilyDied', all_died)])
+    # Predict survival based on family
+    df_test['Family'] = df_test['Name'].str.split(',', n=1, expand=True)[0]
+    df_test = df_test.join(family_survived, on='Family', how='inner')  # Only records with family info
+    df_master_survived = df_test[df_test['Name'].str.contains('Master') & df_test['FamilySurvived']]
+    df_female_died = df_test[(df_test['Sex'] == 'female') & df_test['FamilyDied']]
+    return pd.concat([pd.DataFrame({'Survived': 1}, index=df_master_survived.index),
+                      pd.DataFrame({'Survived': 0}, index=df_female_died.index)])
+
+
+def _predict_by_gender(X_test):
+    y = X_test.copy()
+    y['Survived'] = np.where(y['Sex'] == 'male', 0, 1)
+    return y[['Survived']]
 
 
 def _predict_knn(X_train, y_train, X_test=None):
@@ -241,12 +223,6 @@ def _predict_knn(X_train, y_train, X_test=None):
         preds = _predict(pipeline, X_test_knn)
         X_test = X_test.join(preds, rsuffix='KNN_')
     return X_train, X_test
-
-
-def _predict_by_gender(X_test):
-    y = X_test.copy()
-    y['Survived'] = np.where(y['Sex'] == 'male', 0, 1)
-    return y[['Survived']]
 
 
 def search_params(training_set_file, algorithm):
