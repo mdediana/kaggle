@@ -38,8 +38,10 @@ PARAM_GRIDS = {
         # TODO: Try adjusting lambda, gamma and colsample to avoid overfitting
     },
     RandomForestClassifier: {
-        'n_estimators': [10, 50, 100, 500, 1000, 5000],
+        'n_estimators': [10, 50, 100, 500],
         'max_depth': [2, 3, 5, 10],
+        'max_features': ['auto', None],
+        'ccp_alpha': [0, 0.01, 0.1, 0.5],
     },
     XGBClassifier: {
         # For xgboost_params, see https://xgboost.readthedocs.io/en/latest/python/python_api.html#module-xgboost.sklearn
@@ -64,14 +66,21 @@ PARAM_GRIDS = {
 }
 BEST_PARAMS = {
     AdaBoostClassifier: dict(
-        n_estimators=1000,
-        learning_rate=0.5,
+        # - Pclass, Sex, Age: n_estimators: 1000, learning_rate: 0.5
+        # - Pclass, Sex, Age, SibSp, Parch: n_estimators: 50, learning_rate: 1
+        # - Pclass, Sex, Age, SibSp, Parch, Fare, Embarked: n_estimators: 1000, learning_rate: 0.5
+        n_estimators=50,
+        learning_rate=1,
         random_state=0,
     ),
     GradientBoostingClassifier: dict(
         random_state=0,
     ),
     RandomForestClassifier: dict(
+        n_estimators=10,
+        max_depth=10,
+        max_features='auto',
+        ccp_alpha=0,
         random_state=0,
     ),
     XGBClassifier: dict(
@@ -79,9 +88,8 @@ BEST_PARAMS = {
     ),
     KNeighborsClassifier: dict(),
 }
-
-# Columns used in model
-COLUMNS = ['Pclass', 'Sex', 'Age']
+N_JOBS = -1  # Use all processors, particularly useful when param grid searching
+COLUMNS = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']
 # COLUMNS = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']
 
 logger = logging.getLogger(__name__)
@@ -110,9 +118,11 @@ def _read_csv(filename, split_X_y=True, columns=None):
 
 def _instantiate_model(model_name, use_best_params=True):
     module_name, class_name = MODEL_CLASSES[model_name].rsplit('.', maxsplit=1)
-    class_ = getattr(importlib.import_module(module_name), class_name)
+    module = importlib.import_module(module_name)
+    class_ = getattr(module, class_name)
     params = BEST_PARAMS[class_] if use_best_params else {}
-    logger.info('Instantiating %s with params: %s', class_name, params)
+    params['n_jobs'] = N_JOBS
+    logger.info('Instantiating %s %s', class_name, params if params else '')
     return class_(**params)
 
 
@@ -168,9 +178,10 @@ def _search_params(X, y, model):
     pipeline = Pipeline([('column_transformer', column_transformer), ('model', model)])
     cv = GridSearchCV(pipeline, param_grid, scoring='accuracy')
     cv.fit(X, y)
-    # logger.info('Results: %s', cv.cv_results_)
+    best_params = {param.replace('model__', ''): value for param, value in cv.best_params_.items()}
     logger.info('Best score: %s', cv.best_score_)
-    logger.info('Best parameters: %s', cv.best_params_)
+    logger.info('Best parameters: %s', best_params)
+    # logger.info('Results: %s', cv.cv_results_)
     return cv.best_params_
 
 
