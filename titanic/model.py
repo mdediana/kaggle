@@ -232,7 +232,15 @@ def search_params(training_set_file, algorithm):
     _search_params(X, y, model)
 
 
-def predict(training_set_file, test_set_file, algorithm, suppress_output=False):
+def train(training_set_file, algorithm):
+    X_train, y_train = _read_csv(training_set_file, columns=COLUMNS)
+    model = _instantiate_model(algorithm, use_best_params=True)
+    pipeline, scores, score_training = _train(X_train, y_train, model)
+    logger.info('%s - Score cross validation: %f+/-%f %s - Score training set: %f',
+                type(model).__name__, scores.mean(), scores.std(), scores, score_training)
+
+
+def predict(training_set_file, test_set_file, algorithm):
     X_train, y_train = _read_csv(training_set_file, columns=COLUMNS)
     X_test, _ = _read_csv(test_set_file, columns=COLUMNS)
     # y = _predict_by_gender(X_test)
@@ -244,8 +252,7 @@ def predict(training_set_file, test_set_file, algorithm, suppress_output=False):
     y_family = _predict_by_family(training_set_file, test_set_file)
     y.update(y_family)
     y['Survived'] = y['Survived'].astype(int)  # Fix type after update https://github.com/pandas-dev/pandas/issues/4094
-    if not suppress_output:
-        y.to_csv(sys.stdout)
+    y.to_csv(sys.stdout)
 
 
 def predict_majority(training_set_file, test_set_file):
@@ -277,23 +284,23 @@ def predict_majority(training_set_file, test_set_file):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', help='Command to run', choices=['train', 'predict', 'search'], default='train')
+    parser.add_argument('command', help='Command to run', choices=['train', 'predict', 'search-params'],
+                        default='train')
     parser.add_argument('--training-set-file', help='Training set file', default='train.csv')
     parser.add_argument('--test-set-file', help='Test set file', default='test.csv')
-    parser.add_argument('--suppress-output', help='Do not print output', action='store_true')
-    parser.add_argument('--algorithm', help='Algorithm to be used', required=True)
+    parser.add_argument('--algorithm', help='Algorithm to be used', choices=MODEL_CLASSES.keys(), required=True)
     args = parser.parse_args()
 
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG)
+    ch.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-    if args.command == 'predict':
-        logger.setLevel(logging.INFO)
-        ch.setLevel(logging.INFO)
-        predict(args.training_set_file, args.test_set_file, args.algorithm, suppress_output=args.suppress_output)
-    elif args.command == 'search':
+    if args.command == 'train':
+        train(args.training_set_file, args.algorithm)
+    elif args.command == 'predict':
+        predict(args.training_set_file, args.test_set_file, args.algorithm)
+    elif args.command == 'search-params':
         search_params(args.training_set_file, args.algorithm)
