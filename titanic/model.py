@@ -2,7 +2,6 @@ import argparse
 import sys
 import logging
 from itertools import product
-import math
 import importlib
 
 import pandas as pd
@@ -166,7 +165,9 @@ def _train(X, y, model):
     pipeline = make_pipeline(column_transformer, model)
     pipeline.fit(X, y)
     scores = cross_val_score(pipeline, X, y, cv=5, scoring='accuracy')
-    return pipeline, scores
+    y_predict = pipeline.predict(X)
+    score_predict = (y_predict == y).sum() / len(y)
+    return pipeline, scores, score_predict
 
 
 def _predict(pipeline, X):
@@ -236,8 +237,9 @@ def predict(training_set_file, test_set_file, algorithm, suppress_output=False):
     X_test, _ = _read_csv(test_set_file, columns=COLUMNS)
     # y = _predict_by_gender(X_test)
     model = _instantiate_model(algorithm, use_best_params=True)
-    pipeline, scores = _train(X_train, y_train, model)
-    logger.info('%s - Score: %f+/-%f %s', type(model).__name__, scores.mean(), scores.std(), scores)
+    pipeline, scores, score_training = _train(X_train, y_train, model)
+    logger.info('%s - Score cross validation: %f+/-%f %s - Score training set: %f',
+                type(model).__name__, scores.mean(), scores.std(), scores, score_training)
     y = _predict(pipeline, X_test)
     y_family = _predict_by_family(training_set_file, test_set_file)
     y.update(y_family)
