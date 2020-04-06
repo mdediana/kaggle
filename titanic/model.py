@@ -19,15 +19,15 @@ MODEL_CLASSES = {
     'AdaBoost': 'sklearn.ensemble.AdaBoostClassifier',
     'RandomForest': 'sklearn.ensemble.RandomForestClassifier',
     'GradientBoosting': 'sklearn.ensemble.GradientBoostingClassifier',
-    'KNeighborsClassifier': 'sklearn.neighbors.KNeighborsClassifier',
-    'XGBClassifier': 'xgboost.XGBClassifier',
+    'KNeighbors': 'sklearn.neighbors.KNeighborsClassifier',
+    'XGB': 'xgboost.XGBClassifier',
 }
 PARAM_GRIDS = {
-    AdaBoostClassifier: {
-        'n_estimators': [10, 50, 100, 500, 1000, 5000],
-        'learning_rate': [0.01, 0.1, 0.5, 1],
-    },
-    GradientBoostingClassifier: {
+    AdaBoostClassifier: dict(
+        n_estimators=[10, 50, 100, 500, 1000, 5000],
+        learning_rate=[0.01, 0.1, 0.5, 1],
+    ),
+    GradientBoostingClassifier: dict(
         # n_estimators=150,
         # learning_rate=0.05,
         # max_depth=3,
@@ -35,33 +35,30 @@ PARAM_GRIDS = {
         # max_leaf_nodes=4,
         # ccp_alpha=0.01,
         # TODO: Try adjusting lambda, gamma and colsample to avoid overfitting
-    },
-    RandomForestClassifier: {
-        'n_estimators': [10, 50, 100, 500],
-        'max_depth': [2, 3, 5, 10],
-        'max_features': ['auto', None],
-        'ccp_alpha': [0, 0.01, 0.1, 0.5],
-    },
-    XGBClassifier: {
+    ),
+    RandomForestClassifier: dict(
+        n_estimators=[10, 50, 100, 500],
+        max_depth=[2, 3, 5, 10],
+        max_features=['auto', None],
+        ccp_alpha=[0, 0.01, 0.1, 0.5],
+    ),
+    XGBClassifier: dict(
         # For xgboost_params, see https://xgboost.readthedocs.io/en/latest/python/python_api.html#module-xgboost.sklearn
         # https://machinelearningmastery.com/configure-gradient-boosting-algorithm/
-        # 'max_depth': [2, 3, 4, 6, 8, 10],
-        'max_depth': [3],
-        # 'learning_rate': [1, 0.5, 0.1, 0.05, 0.025, 0.001],
-        'learning_rate': [0.07, 0.05],
-        # 'n_estimators': [50, 100, 200, 500, 1000],
-        'n_estimators': [200, 500, 1000, 2000],
-        # 'gamma': [0.05, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0],
-        # 'min_child_weight': [1, 3, 5, 7],
-        # 'subsample': [0.5, 0.75, 1.0],
-        # 'colsample_bytree': [0.4, 0.6, 0.8, 1.0],
-        # 'reg_alpha': [0, 0.1, 0.5, 1.0],
-        # 'reg_lambda': [0.01, 0.1, 1.0],
-    },
-    KNeighborsClassifier: {
+        # max_depth=[2, 3, 4, 6, 8, 10],
+        learning_rate=[0.07, 0.05],
+        n_estimators=[200, 500, 1000, 2000],
+        # gamma=[0.05, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0],
+        # min_child_weight=[1, 3, 5, 7],
+        # subsample=[0.5, 0.75, 1.0],
+        # colsample_bytree=[0.4, 0.6, 0.8, 1.0],
+        # reg_alpha=[0, 0.1, 0.5, 1.0],
+        # reg_lambda=[0.01, 0.1, 1.0],
+    ),
+    KNeighborsClassifier: dict(
         # n_neighbors=50,
         # algorithm='brute',
-    },
+    ),
 }
 BEST_PARAMS = {
     AdaBoostClassifier: dict(
@@ -141,7 +138,7 @@ def _column_transformer(columns, remainder='passthrough'):
     }
     logger.info('Preparing transformers for columns: %s', columns.tolist())
     transformers = [(imputers[col], [col]) for col in columns]
-    return make_column_transformer(*transformers, remainder='passthrough')
+    return make_column_transformer(*transformers, remainder=remainder)
 
 
 def _search_params(X, y, model):
