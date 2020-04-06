@@ -10,7 +10,8 @@ from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.compose import make_column_transformer
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from sklearn.ensemble import AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import (AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier,
+                              ExtraTreesClassifier)
 from sklearn.neighbors import KNeighborsClassifier, NeighborhoodComponentsAnalysis
 from sklearn.model_selection import cross_val_score, GridSearchCV
 from xgboost import XGBClassifier
@@ -18,29 +19,42 @@ from xgboost import XGBClassifier
 MODEL_CLASSES = {
     'AdaBoost': 'sklearn.ensemble.AdaBoostClassifier',
     'RandomForest': 'sklearn.ensemble.RandomForestClassifier',
+    'ExtraTrees': 'sklearn.ensemble.ExtraTreesClassifier',
     'GradientBoosting': 'sklearn.ensemble.GradientBoostingClassifier',
     'KNeighbors': 'sklearn.neighbors.KNeighborsClassifier',
     'XGB': 'xgboost.XGBClassifier',
 }
+N_JOBS = -1  # Use all processors, particularly useful when param grid searching
 PARAM_GRIDS = {
     AdaBoostClassifier: dict(
         n_estimators=[10, 50, 100, 500, 1000, 5000],
         learning_rate=[0.01, 0.1, 0.5, 1],
     ),
     GradientBoostingClassifier: dict(
-        # n_estimators=150,
-        # learning_rate=0.05,
-        # max_depth=3,
-        # max_features='sqrt',
-        # max_leaf_nodes=4,
-        # ccp_alpha=0.01,
-        # TODO: Try adjusting lambda, gamma and colsample to avoid overfitting
+        n_estimators=[100, 500, 1000],
+        learning_rate=[0.1, 0.5, 0.7, 1],
+        subsample=[0.25, 0.5, 1],
+        max_depth=[2, 3],
+        # Regularization param fixed after manual tests comparing cross val and training set scores
+        min_samples_leaf=[0.2],
     ),
     RandomForestClassifier: dict(
-        n_estimators=[10, 50, 100, 500],
-        max_depth=[2, 3, 5, 10],
-        max_features=['auto', None],
-        ccp_alpha=[0, 0.01, 0.1, 0.5],
+        n_estimators=[10, 50, 100],
+        max_depth=[None, 10, 20],
+        # max_features=['auto', None],
+        max_features=[None],
+        # Regularization param fixed after manual tests comparing cross val and training set scores
+        min_samples_leaf=[0.05],
+        n_jobs=[N_JOBS],
+    ),
+    ExtraTreesClassifier: dict(
+        n_estimators=[10, 50, 100],
+        max_depth=[None, 10, 20],
+        # max_features=['auto', None],
+        max_features=[None],
+        # Regularization param fixed after manual tests comparing cross val and training set scores
+        min_samples_leaf=[0.05],
+        n_jobs=[N_JOBS],
     ),
     XGBClassifier: dict(
         # For xgboost_params, see https://xgboost.readthedocs.io/en/latest/python/python_api.html#module-xgboost.sklearn
@@ -56,8 +70,11 @@ PARAM_GRIDS = {
         # reg_lambda=[0.01, 0.1, 1.0],
     ),
     KNeighborsClassifier: dict(
-        # n_neighbors=50,
-        # algorithm='brute',
+        n_neighbors=[5, 10, 100],
+        weights=['uniform', 'distance'],
+        metric=['minkowski', 'euclidean'],
+        p=[1, 2],
+        n_jobs=[N_JOBS],
     ),
 }
 BEST_PARAMS = {
@@ -70,21 +87,43 @@ BEST_PARAMS = {
         random_state=0,
     ),
     GradientBoostingClassifier: dict(
+        n_estimators=500,
+        learning_rate=0.5,
+        subsample=1,
+        max_depth=2,
+        # Regularization params
+        # min_samples_split=0.1,
+        min_samples_leaf=0.2,
         random_state=0,
     ),
     RandomForestClassifier: dict(
+        n_estimators=50,
+        max_depth=None,
+        max_features=None,
+        # Regularization params
+        # min_samples_split=0.1,
+        min_samples_leaf=0.05,
+        random_state=0,
+    ),
+    ExtraTreesClassifier: dict(
         n_estimators=10,
-        max_depth=10,
-        max_features='auto',
-        ccp_alpha=0,
+        max_depth=None,
+        max_features=None,
+        # Regularization params
+        # min_samples_split=0.1,
+        min_samples_leaf=0.05,
         random_state=0,
     ),
     XGBClassifier: dict(
         random_state=0,
     ),
-    KNeighborsClassifier: dict(),
+    KNeighborsClassifier: dict(
+        n_neighbors=10,  # Overfits for many different values
+        weights='distance',
+        metric='minkowski',
+        p=1,
+    ),
 }
-N_JOBS = -1  # Use all processors, particularly useful when param grid searching
 COLUMNS = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']
 # COLUMNS = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']
 
@@ -117,7 +156,6 @@ def _instantiate_model(model_name, use_best_params=True):
     module = importlib.import_module(module_name)
     class_ = getattr(module, class_name)
     params = BEST_PARAMS[class_] if use_best_params else {}
-    params['n_jobs'] = N_JOBS
     logger.info('Instantiating %s %s', class_name, params if params else '')
     return class_(**params)
 
@@ -233,8 +271,9 @@ def train(training_set_file, algorithm):
     X_train, y_train = _read_csv(training_set_file, columns=COLUMNS)
     model = _instantiate_model(algorithm, use_best_params=True)
     pipeline, scores, score_training = _train(X_train, y_train, model)
-    logger.info('%s - Score cross validation: %f+/-%f %s - Score training set: %f',
-                type(model).__name__, scores.mean(), scores.std(), scores, score_training)
+    logger.info('%s - Score cross validation: %f+/-%f %s - Score training set: %f (diff: %f)',
+                type(model).__name__, scores.mean(), scores.std(), scores, score_training,
+                score_training - scores.mean())
 
 
 def predict(training_set_file, test_set_file, algorithm):
@@ -243,8 +282,9 @@ def predict(training_set_file, test_set_file, algorithm):
     # y = _predict_by_gender(X_test)
     model = _instantiate_model(algorithm, use_best_params=True)
     pipeline, scores, score_training = _train(X_train, y_train, model)
-    logger.info('%s - Score cross validation: %f+/-%f %s - Score training set: %f',
-                type(model).__name__, scores.mean(), scores.std(), scores, score_training)
+    logger.info('%s - Score cross validation: %f+/-%f %s - Score training set: %f (diff: %f)',
+                type(model).__name__, scores.mean(), scores.std(), scores, score_training,
+                score_training - scores.mean())
     y = _predict(pipeline, X_test)
     y_family = _predict_by_family(training_set_file, test_set_file)
     y.update(y_family)
