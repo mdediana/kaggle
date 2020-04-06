@@ -13,6 +13,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.ensemble import (AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier,
                               ExtraTreesClassifier, VotingClassifier)
 from sklearn.neighbors import KNeighborsClassifier, NeighborhoodComponentsAnalysis
+from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score, GridSearchCV
 from xgboost import XGBClassifier
 
@@ -23,6 +24,7 @@ CLF_CLASSES = {
     'GradientBoosting': 'sklearn.ensemble.GradientBoostingClassifier',
     'KNeighbors': 'sklearn.neighbors.KNeighborsClassifier',
     'XGB': 'xgboost.XGBClassifier',
+    'LogisticRegression': 'sklearn.linear_model.LogisticRegression',
 }
 N_JOBS = -1  # Use all processors, particularly useful when param grid searching
 PARAM_GRIDS = {
@@ -76,6 +78,10 @@ PARAM_GRIDS = {
         p=[1, 2],
         n_jobs=[N_JOBS],
     ),
+    LogisticRegression: dict(
+        C=[0.01, 0.05, 0.1, 0.5, 1],
+        max_iter=[1000],
+    ),
 }
 BEST_PARAMS = {
     AdaBoostClassifier: dict(
@@ -123,6 +129,11 @@ BEST_PARAMS = {
         metric='minkowski',
         p=1,
     ),
+    LogisticRegression: dict(
+        C=0.05,
+        max_iter=1000,
+        random_state=0,
+    ),
 }
 COLUMNS = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']
 # COLUMNS = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']
@@ -151,7 +162,7 @@ def _read_csv(filename, split_X_y=True, columns=None):
     return X, y
 
 
-def _instantiate_clf(algorithms, use_best_params=True, voting='soft'):
+def _instantiate_clf(algorithms, use_best_params=True, voting='hard'):
     clf_names = algorithms.split(',')
     logger.info('Number of estimators: %d', len(clf_names))
     estimators = []  # Contains (name, clf) tuples for the VotingClassifier
