@@ -11,12 +11,12 @@ from sklearn.compose import make_column_transformer
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.ensemble import (AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier,
-                              ExtraTreesClassifier)
+                              ExtraTreesClassifier, VotingClassifier)
 from sklearn.neighbors import KNeighborsClassifier, NeighborhoodComponentsAnalysis
 from sklearn.model_selection import cross_val_score, GridSearchCV
 from xgboost import XGBClassifier
 
-MODEL_CLASSES = {
+CLF_CLASSES = {
     'AdaBoost': 'sklearn.ensemble.AdaBoostClassifier',
     'RandomForest': 'sklearn.ensemble.RandomForestClassifier',
     'ExtraTrees': 'sklearn.ensemble.ExtraTreesClassifier',
@@ -151,13 +151,25 @@ def _read_csv(filename, split_X_y=True, columns=None):
     return X, y
 
 
-def _instantiate_model(model_name, use_best_params=True):
-    module_name, class_name = MODEL_CLASSES[model_name].rsplit('.', maxsplit=1)
-    module = importlib.import_module(module_name)
-    class_ = getattr(module, class_name)
-    params = BEST_PARAMS[class_] if use_best_params else {}
-    logger.info('Instantiating %s %s', class_name, params if params else '')
-    return class_(**params)
+def _instantiate_clf(algorithms, use_best_params=True, voting='soft'):
+    clf_names = algorithms.split(',')
+    logger.info('Number of estimators: %d', len(clf_names))
+    estimators = []  # Contains (name, clf) tuples for the VotingClassifier
+    for clf_name in clf_names:
+        module_name, class_name = CLF_CLASSES[clf_name].rsplit('.', maxsplit=1)
+        module = importlib.import_module(module_name)
+        class_ = getattr(module, class_name)
+        params = BEST_PARAMS[class_] if use_best_params else {}
+        logger.info('Instantiating %s %s', class_name, params if params else '')
+        estimators.append((clf_name, class_(**params)))
+    if len(estimators) == 1:
+        clf = estimators[0][1]
+    else:
+        logger.info('Creating voting estimator: %s', voting)
+        clf = VotingClassifier(estimators=estimators, voting=voting)
+        estimators = [(estimator.__class__.__name__, estimator)
+                      for estimator in estimators]
+    return clf
 
 
 def _column_transformer(columns, remainder='passthrough'):
@@ -195,14 +207,17 @@ def _search_params(X, y, model):
     return cv.best_params_
 
 
-def _train(X, y, model):
+def _train(X, y, clf):
     column_transformer = _column_transformer(X.columns)
-    pipeline = make_pipeline(column_transformer, model)
+    pipeline = make_pipeline(column_transformer, clf)
     pipeline.fit(X, y)
     scores = cross_val_score(pipeline, X, y, cv=5, scoring='accuracy')
     y_predict = pipeline.predict(X)
     score_predict = (y_predict == y).sum() / len(y)
-    return pipeline, scores, score_predict
+    logger.info('%s - Score cross validation: %f+/-%f %s - Score training set: %f (diff: %f)',
+                type(clf).__name__, scores.mean(), scores.std(), scores, score_predict,
+                score_predict - scores.mean())
+    return pipeline
 
 
 def _predict(pipeline, X):
@@ -245,7 +260,7 @@ def _predict_knn(X_train, y_train, X_test=None):
     # Prepare pipeline
     column_trans = _column_transformer(X_train_knn.columns)
     nca = NeighborhoodComponentsAnalysis(random_state=0)
-    model = _instantiate_model('KNeighbors')
+    model = _instantiate_clf('KNeighbors')
     pipeline = make_pipeline(column_trans, nca, model)
     # Train
     pipeline.fit(X_train_knn, y_train)
@@ -263,28 +278,22 @@ def _predict_knn(X_train, y_train, X_test=None):
 
 def search_params(training_set_file, algorithm):
     X, y = _read_csv(training_set_file, columns=COLUMNS)
-    model = _instantiate_model(algorithm, use_best_params=False)
+    model = _instantiate_clf(algorithm, use_best_params=False)
     _search_params(X, y, model)
 
 
-def train(training_set_file, algorithm):
+def train(training_set_file, algorithms):
     X_train, y_train = _read_csv(training_set_file, columns=COLUMNS)
-    model = _instantiate_model(algorithm, use_best_params=True)
-    pipeline, scores, score_training = _train(X_train, y_train, model)
-    logger.info('%s - Score cross validation: %f+/-%f %s - Score training set: %f (diff: %f)',
-                type(model).__name__, scores.mean(), scores.std(), scores, score_training,
-                score_training - scores.mean())
+    clf = _instantiate_clf(algorithms, use_best_params=True)
+    _train(X_train, y_train, clf)
 
 
-def predict(training_set_file, test_set_file, algorithm):
+def predict(training_set_file, test_set_file, algorithms, voting='soft'):
     X_train, y_train = _read_csv(training_set_file, columns=COLUMNS)
     X_test, _ = _read_csv(test_set_file, columns=COLUMNS)
     # y = _predict_by_gender(X_test)
-    model = _instantiate_model(algorithm, use_best_params=True)
-    pipeline, scores, score_training = _train(X_train, y_train, model)
-    logger.info('%s - Score cross validation: %f+/-%f %s - Score training set: %f (diff: %f)',
-                type(model).__name__, scores.mean(), scores.std(), scores, score_training,
-                score_training - scores.mean())
+    clf = _instantiate_clf(algorithms, use_best_params=True)
+    pipeline = _train(X_train, y_train, clf)
     y = _predict(pipeline, X_test)
     y_family = _predict_by_family(training_set_file, test_set_file)
     y.update(y_family)
@@ -292,40 +301,16 @@ def predict(training_set_file, test_set_file, algorithm):
     y.to_csv(sys.stdout)
 
 
-def predict_majority(training_set_file, test_set_file):
-    """Deprecated"""
-    X_train, y_train = _read_csv(training_set_file)
-    X_test, _ = _read_csv(test_set_file)
-    # X_train, X_test = _predict_knn(X_train, y_train, X_test)
-    # Gradient boost
-    model = _instantiate_model('GradientBoosting')
-    pipeline, scores = _train(X_train, y_train, model)
-    logger.info('%s - Score: %f+/-%f %s', type(model).__name__, scores.mean(), scores.std(), scores)
-    preds_1 = _predict(pipeline, X_test)
-    # Random Forest
-    model = _instantiate_model('RandomForest')
-    pipeline, scores = _train(X_train, y_train, model)
-    logger.info('%s - Score: %f+/-%f %s', type(model).__name__, scores.mean(), scores.std(), scores)
-    preds_2 = _predict(pipeline, X_test)
-    # KNN
-    _, X_test_knn = _predict_knn(X_train, y_train, X_test)
-    preds_3 = X_test_knn[['Survived']].copy()
-    preds_3.rename(columns={'Survived': 'Survived_knn'}, inplace=True)
-    # Results
-    preds = preds_1.join(preds_2, lsuffix='_gb', rsuffix='_rf').join(preds_3)
-    preds['Survived'] = preds.mode(axis=1)
-    # preds['Diff'] = (preds.Survived_gb == preds.Survived_rf) & (preds.Survived_rf == preds.Survived_knn)
-    preds.drop(columns=['Survived_gb', 'Survived_rf', 'Survived_knn'], inplace=True)
-    preds.to_csv(sys.stdout)
-
-
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description='Run one or more algorithms to predict Titanic survivorship. Implemented algorithms: ' +
+        ', '.join(CLF_CLASSES.keys()))
     parser.add_argument('command', help='Command to run', choices=['train', 'predict', 'search-params'],
                         default='train')
     parser.add_argument('--training-set-file', help='Training set file', default='train.csv')
     parser.add_argument('--test-set-file', help='Test set file', default='test.csv')
-    parser.add_argument('--algorithm', help='Algorithm to be used', choices=MODEL_CLASSES.keys(), required=True)
+    parser.add_argument('--algorithm', help='Algorithms or comma-separated list of algorithms to be used',
+                        required=True)
     args = parser.parse_args()
 
     logger.setLevel(logging.INFO)
