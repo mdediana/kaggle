@@ -103,40 +103,40 @@ BEST_PARAMS = {
         random_state=0,
     ),
     RandomForestClassifier: dict(
-        n_estimators=50,
-        max_depth=None,
-        max_features=None,
+        n_estimators=1000,
+        max_depth=20,
+        max_features='auto',
         # Regularization params
         # min_samples_split=0.1,
-        min_samples_leaf=0.05,
+        min_samples_leaf=0.01,
         random_state=0,
     ),
     ExtraTreesClassifier: dict(
-        n_estimators=10,
-        max_depth=None,
+        n_estimators=100,
+        max_depth=10,
         max_features=None,
         # Regularization params
         # min_samples_split=0.1,
-        min_samples_leaf=0.05,
+        min_samples_leaf=0.01,
         random_state=0,
     ),
     XGBClassifier: dict(
         random_state=0,
     ),
     KNeighborsClassifier: dict(
-        n_neighbors=10,  # Overfits for many different values
-        weights='distance',
-        metric='minkowski',
-        p=1,
+        algorithm='auto',
+        n_neighbors=7,
+        leaf_size=26,
+        weights='uniform',
+        # metric='minkowski',
     ),
     LogisticRegression: dict(
-        C=0.05,
+        C=0.5,
         max_iter=1000,
         random_state=0,
     ),
 }
-COLUMNS = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']
-# COLUMNS = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']
+COLUMNS = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked', 'FamilySurvived', 'FamilySize']
 
 logger = logging.getLogger(__name__)
 
@@ -145,12 +145,6 @@ def _read_csv(filename, split_X_y=True, columns=None):
     """Return X, y if training data or X, None if test data"""
     df = pd.read_csv(filename)
     df.set_index('PassengerId', inplace=True)
-    # Set missing boy ages - better imputation of ages hurts accuracy (?)
-    # childrens_age_median = df[df.Age < 18].Age.median()
-    # mask = df.Name.str.contains('Master') & df.Age.isnull()
-    # df.at[df[mask].index, 'Age'] = childrens_age_median
-    # df['Relatives'] = df.SibSp + df.Parch
-    # df['FarePerPerson'] = df.Fare / (df.Relatives + 1)
     if split_X_y and 'Survived' in df:
         X = df.drop(columns=['Survived'])
         y = df['Survived']
@@ -160,6 +154,45 @@ def _read_csv(filename, split_X_y=True, columns=None):
     if columns is not None:
         X = X[columns]
     return X, y
+
+
+def _new_features(X_train, y_train, X_test):
+    data_df = X_train.join(y_train)
+    data_df = data_df.append(X_test, sort=True)
+
+    # FamilySize
+    X_train['FamilySize'] = X_train['Parch'] + X_train['SibSp']
+    X_test['FamilySize'] = X_test['Parch'] + X_test['SibSp']
+
+    # FamilySurvived feature idea from https://www.kaggle.com/konstantinmasich/titanic-0-82-0-83/
+    data_df['Family'] = data_df['Name'].str.split(',', n=1, expand=True)[0]
+    data_df['Fare'].fillna(data_df['Fare'].mean(), inplace=True)
+
+    # Group by family and fare
+    for _, grp_df in data_df.groupby(['Family', 'Fare']):
+        for ind, row in grp_df.iterrows():
+            # 0.5 if there is no info available, 0 if all dead, 1 if someone survived
+            others = grp_df.drop(ind)['Survived']
+            data_df.loc[ind, 'FamilySurvived'] = 0.5 if others.isnull().all() else others.max()
+    logger.info('Number of passengers with family survival information: %d',
+                len(data_df[data_df['FamilySurvived'] != 0.5]))
+
+    # Add information about group survival from ticket
+    for _, grp_df in data_df.groupby('Ticket'):
+        for ind, row in grp_df.iterrows():
+            if row['FamilySurvived'] == 1:
+                continue
+            others = grp_df.drop(ind)['Survived']
+            if others.max() == 1:    # Any others survived
+                data_df.loc[ind, 'FamilySurvived'] = 1
+            elif others.min() == 0:  # All others dead
+                data_df.loc[ind, 'FamilySurvived'] = 0
+    logger.info('Number of passengers with family survival information after ticket groups: %d',
+                len(data_df[data_df['FamilySurvived'] != 0.5]))
+
+    X_train['FamilySurvived'] = data_df['FamilySurvived'][:891]
+    X_test['FamilySurvived'] = data_df['FamilySurvived'][891:]
+    return X_train, X_test
 
 
 def _instantiate_clf(algorithms, use_best_params=True, voting='hard'):
@@ -183,7 +216,7 @@ def _instantiate_clf(algorithms, use_best_params=True, voting='hard'):
     return clf
 
 
-def _column_transformer(columns, remainder='passthrough'):
+def _column_transformer(columns, remainder='drop'):
     imputers = {
         'Embarked': make_pipeline(
             SimpleImputer(strategy='most_frequent'),
@@ -193,12 +226,17 @@ def _column_transformer(columns, remainder='passthrough'):
             StandardScaler()),
         'Pclass': OneHotEncoder(),
         'Sex': OneHotEncoder(),
-        'Fare': SimpleImputer(strategy='median'),
+        'Fare': SimpleImputer(strategy='mean'),
         'SibSp': StandardScaler(),
         'Parch': StandardScaler(),
+        'FamilySurvived': StandardScaler(),
+        'TicketSurvived': StandardScaler(),
+        'FamilySize': StandardScaler(),
+        'FarePerPerson': StandardScaler(),
     }
     logger.info('Preparing transformers for columns: %s', columns.tolist())
-    transformers = [(imputers[col], [col]) for col in columns]
+    logger.info('Columns without transformers to be dropped: %s', columns.tolist() - imputers.keys())
+    transformers = [(imputers[col], [col]) for col in columns if col in imputers.keys()]
     return make_column_transformer(*transformers, remainder=remainder)
 
 
@@ -206,7 +244,7 @@ def _search_params(X, y, model):
     column_transformer = _column_transformer(X.columns)
     param_grid = PARAM_GRIDS[type(model)]
     combinations = list(product(*param_grid.values()))
-    logger.info('Search hyperparamaters, number of combinations: %d', len(combinations))
+    logger.info('Search hyperparameters, number of combinations: %d', len(combinations))
     param_grid = {'model__' + params: param_grid[params] for params in param_grid}
     pipeline = Pipeline([('column_transformer', column_transformer), ('model', model)])
     cv = GridSearchCV(pipeline, param_grid, scoring='accuracy')
@@ -287,21 +325,35 @@ def _predict_knn(X_train, y_train, X_test=None):
     return X_train, X_test
 
 
-def search_params(training_set_file, algorithm):
-    X, y = _read_csv(training_set_file, columns=COLUMNS)
+def search_params(training_set_file, test_set_file, algorithm):
+    # X, y = _read_csv(training_set_file, columns=COLUMNS)
+    X_train, y_train = _read_csv(training_set_file)
+    X_test, _ = _read_csv(test_set_file)
+    X_train, _ = _new_features(X_train, y_train, X_test)
+    # X_train = X_train[['FamilySurvived', 'Sex', 'Pclass', 'Age']]
+    X_train = X_train[COLUMNS]
     model = _instantiate_clf(algorithm, use_best_params=False)
-    _search_params(X, y, model)
+    _search_params(X_train, y_train, model)
 
 
-def train(training_set_file, algorithms):
-    X_train, y_train = _read_csv(training_set_file, columns=COLUMNS)
+def train(training_set_file, test_set_file, algorithms):
+    # X_train, y_train = _read_csv(training_set_file, columns=COLUMNS)
+    X_train, y_train = _read_csv(training_set_file)
+    X_test, _ = _read_csv(test_set_file)
+    X_train, _ = _new_features(X_train, y_train, X_test)
+    X_train = X_train[COLUMNS]
     clf = _instantiate_clf(algorithms, use_best_params=True)
     _train(X_train, y_train, clf)
 
 
 def predict(training_set_file, test_set_file, algorithms, voting='soft'):
-    X_train, y_train = _read_csv(training_set_file, columns=COLUMNS)
-    X_test, _ = _read_csv(test_set_file, columns=COLUMNS)
+    # X_train, y_train = _read_csv(training_set_file, columns=COLUMNS)
+    # X_test, _ = _read_csv(test_set_file, columns=COLUMNS)
+    X_train, y_train = _read_csv(training_set_file)
+    X_test, _ = _read_csv(test_set_file)
+    X_train, _ = _new_features(X_train, y_train, X_test)
+    X_train = X_train[COLUMNS]
+    X_test = X_test[COLUMNS]
     # y = _predict_by_gender(X_test)
     clf = _instantiate_clf(algorithms, use_best_params=True)
     pipeline = _train(X_train, y_train, clf)
@@ -332,8 +384,8 @@ if __name__ == '__main__':
     logger.addHandler(ch)
 
     if args.command == 'train':
-        train(args.training_set_file, args.algorithm)
+        train(args.training_set_file, args.test_set_file, args.algorithm)
     elif args.command == 'predict':
         predict(args.training_set_file, args.test_set_file, args.algorithm)
     elif args.command == 'search-params':
-        search_params(args.training_set_file, args.algorithm)
+        search_params(args.training_set_file, args.test_set_file, args.algorithm)
