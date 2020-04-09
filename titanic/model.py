@@ -2,7 +2,6 @@ import argparse
 import sys
 import logging
 from itertools import product
-import importlib
 
 import pandas as pd
 import numpy as np
@@ -12,21 +11,25 @@ from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.ensemble import (AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier,
                               ExtraTreesClassifier, VotingClassifier)
-from sklearn.neighbors import KNeighborsClassifier, NeighborhoodComponentsAnalysis
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score, GridSearchCV
 from xgboost import XGBClassifier
 
+# Simple names to be used on the command line
 CLF_CLASSES = {
-    'AdaBoost': 'sklearn.ensemble.AdaBoostClassifier',
-    'RandomForest': 'sklearn.ensemble.RandomForestClassifier',
-    'ExtraTrees': 'sklearn.ensemble.ExtraTreesClassifier',
-    'GradientBoosting': 'sklearn.ensemble.GradientBoostingClassifier',
-    'KNeighbors': 'sklearn.neighbors.KNeighborsClassifier',
-    'XGB': 'xgboost.XGBClassifier',
-    'LogisticRegression': 'sklearn.linear_model.LogisticRegression',
+    'AdaBoost': AdaBoostClassifier,
+    'RandomForest': RandomForestClassifier,
+    'ExtraTrees': ExtraTreesClassifier,
+    'GradientBoosting': GradientBoostingClassifier,
+    'KNeighbors': KNeighborsClassifier,
+    'XGB': XGBClassifier,
+    'LogisticRegression': LogisticRegression,
 }
 N_JOBS = -1  # Use all processors, particularly useful when param grid searching
+CV_FOLDS = 5
+SCORING = 'accuracy'
+DEFAULT_VOTING = 'hard'
 PARAM_GRIDS = {
     AdaBoostClassifier: dict(
         n_estimators=[10, 50, 100, 500, 1000, 5000],
@@ -41,21 +44,20 @@ PARAM_GRIDS = {
         min_samples_leaf=[0.2],
     ),
     RandomForestClassifier: dict(
-        n_estimators=[10, 50, 100],
+        n_estimators=[10, 100, 500, 1000],
         max_depth=[None, 10, 20],
-        # max_features=['auto', None],
-        max_features=[None],
+        max_features=['auto', None],
+        # max_features=[None],
         # Regularization param fixed after manual tests comparing cross val and training set scores
-        min_samples_leaf=[0.05],
+        min_samples_leaf=[0.01],
         n_jobs=[N_JOBS],
     ),
     ExtraTreesClassifier: dict(
-        n_estimators=[10, 50, 100],
+        n_estimators=[10, 100, 500, 1000],
         max_depth=[None, 10, 20],
-        # max_features=['auto', None],
-        max_features=[None],
+        max_features=['auto', None],
         # Regularization param fixed after manual tests comparing cross val and training set scores
-        min_samples_leaf=[0.05],
+        min_samples_leaf=[0.01],
         n_jobs=[N_JOBS],
     ),
     XGBClassifier: dict(
@@ -85,9 +87,6 @@ PARAM_GRIDS = {
 }
 BEST_PARAMS = {
     AdaBoostClassifier: dict(
-        # - Pclass, Sex, Age: n_estimators: 1000, learning_rate: 0.5
-        # - Pclass, Sex, Age, SibSp, Parch: n_estimators: 50, learning_rate: 1
-        # - Pclass, Sex, Age, SibSp, Parch, Fare, Embarked: n_estimators: 1000, learning_rate: 0.5
         n_estimators=50,
         learning_rate=1,
         random_state=0,
@@ -141,7 +140,7 @@ COLUMNS = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked', 'Family
 logger = logging.getLogger(__name__)
 
 
-def _read_csv(filename, split_X_y=True, columns=None):
+def _read_csv(filename, split_X_y=True):
     """Return X, y if training data or X, None if test data"""
     df = pd.read_csv(filename)
     df.set_index('PassengerId', inplace=True)
@@ -151,27 +150,25 @@ def _read_csv(filename, split_X_y=True, columns=None):
     else:
         X = df
         y = None
-    if columns is not None:
-        X = X[columns]
     return X, y
 
 
 def _new_features(X_train, y_train, X_test):
-    data_df = X_train.join(y_train)
-    data_df = data_df.append(X_test, sort=True)
-
     # FamilySize
-    X_train['FamilySize'] = X_train['Parch'] + X_train['SibSp']
-    X_test['FamilySize'] = X_test['Parch'] + X_test['SibSp']
+    for df in [X_train, X_test]:
+        df['FamilySize'] = df['Parch'] + df['SibSp']
 
     # FamilySurvived feature idea from https://www.kaggle.com/konstantinmasich/titanic-0-82-0-83/
+    data_df = X_train.join(y_train).append(X_test, sort=True)
     data_df['Family'] = data_df['Name'].str.split(',', n=1, expand=True)[0]
     data_df['Fare'].fillna(data_df['Fare'].mean(), inplace=True)
 
     # Group by family and fare
     for _, grp_df in data_df.groupby(['Family', 'Fare']):
         for ind, row in grp_df.iterrows():
-            # 0.5 if there is no info available, 0 if all dead, 1 if someone survived
+            # 0.5 if passenger is alone or there is no survivorship info (test set)
+            # 0 if everyone else in group is dead
+            # 1 if there is at least one survivor in group
             others = grp_df.drop(ind)['Survived']
             data_df.loc[ind, 'FamilySurvived'] = 0.5 if others.isnull().all() else others.max()
     logger.info('Number of passengers with family survival information: %d',
@@ -190,29 +187,39 @@ def _new_features(X_train, y_train, X_test):
     logger.info('Number of passengers with family survival information after ticket groups: %d',
                 len(data_df[data_df['FamilySurvived'] != 0.5]))
 
-    X_train['FamilySurvived'] = data_df['FamilySurvived'][:891]
-    X_test['FamilySurvived'] = data_df['FamilySurvived'][891:]
+    X_train['FamilySurvived'] = data_df['FamilySurvived'][:len(X_train)]
+    X_test['FamilySurvived'] = data_df['FamilySurvived'][len(X_train):]
     return X_train, X_test
 
 
-def _instantiate_clf(algorithms, use_best_params=True, voting='hard'):
-    clf_names = algorithms.split(',')
-    logger.info('Number of estimators: %d', len(clf_names))
+def _read_data(training_set_file, test_set_file):
+    X_train, y_train = _read_csv(training_set_file)
+    X_test, _ = _read_csv(test_set_file)
+    X_train, _ = _new_features(X_train, y_train, X_test)
+    X_train = X_train[COLUMNS]
+    X_test = X_test[COLUMNS]
+    return X_train, y_train, X_test
+
+
+def _instantiate_clf(algorithms, use_best_params=True, voting=DEFAULT_VOTING):
+    """Return a classifier. If 'algorithms' is a list of strings a VotingClassifier is returned,  if it is a string,
+    a single classifier using that algorithm is returned.
+    """
+    if isinstance(algorithms, str):
+        algorithms = [algorithms]
+    logger.info('Number of estimators: %d', len(algorithms))
     estimators = []  # Contains (name, clf) tuples for the VotingClassifier
-    for clf_name in clf_names:
-        module_name, class_name = CLF_CLASSES[clf_name].rsplit('.', maxsplit=1)
-        module = importlib.import_module(module_name)
-        class_ = getattr(module, class_name)
+    for algorithm in algorithms:
+        class_ = CLF_CLASSES[algorithm]
         params = BEST_PARAMS[class_] if use_best_params else {}
-        logger.info('Instantiating %s %s', class_name, params if params else '')
-        estimators.append((clf_name, class_(**params)))
+        logger.info('Instantiating %s %s', class_.__name__, params if params else '')
+        estimators.append((algorithm, class_(**params)))
     if len(estimators) == 1:
         clf = estimators[0][1]
     else:
         logger.info('Creating voting estimator: %s', voting)
         clf = VotingClassifier(estimators=estimators, voting=voting)
-        estimators = [(estimator.__class__.__name__, estimator)
-                      for estimator in estimators]
+        estimators = [(estimator.__class__.__name__, estimator) for estimator in estimators]
     return clf
 
 
@@ -240,16 +247,16 @@ def _column_transformer(columns, remainder='drop'):
     return make_column_transformer(*transformers, remainder=remainder)
 
 
-def _search_params(X, y, model):
+def _search_params(X, y, clf):
     column_transformer = _column_transformer(X.columns)
-    param_grid = PARAM_GRIDS[type(model)]
+    param_grid = PARAM_GRIDS[clf.__class__]
     combinations = list(product(*param_grid.values()))
     logger.info('Search hyperparameters, number of combinations: %d', len(combinations))
-    param_grid = {'model__' + params: param_grid[params] for params in param_grid}
-    pipeline = Pipeline([('column_transformer', column_transformer), ('model', model)])
-    cv = GridSearchCV(pipeline, param_grid, scoring='accuracy')
+    param_grid = {'clf__' + params: param_grid[params] for params in param_grid}
+    pipeline = Pipeline([('column_transformer', column_transformer), ('clf', clf)])
+    cv = GridSearchCV(pipeline, param_grid, scoring=SCORING)
     cv.fit(X, y)
-    best_params = {param.replace('model__', ''): value for param, value in cv.best_params_.items()}
+    best_params = {param.replace('clf__', ''): value for param, value in cv.best_params_.items()}
     logger.info('Best score: %s', cv.best_score_)
     logger.info('Best parameters: %s', best_params)
     # logger.info('Results: %s', cv.cv_results_)
@@ -260,11 +267,11 @@ def _train(X, y, clf):
     column_transformer = _column_transformer(X.columns)
     pipeline = make_pipeline(column_transformer, clf)
     pipeline.fit(X, y)
-    scores = cross_val_score(pipeline, X, y, cv=5, scoring='accuracy')
+    scores = cross_val_score(pipeline, X, y, cv=CV_FOLDS, scoring=SCORING)
     y_predict = pipeline.predict(X)
     score_predict = (y_predict == y).sum() / len(y)
     logger.info('%s - Score cross validation: %f+/-%f %s - Score training set: %f (diff: %f)',
-                type(clf).__name__, scores.mean(), scores.std(), scores, score_predict,
+                clf.__class__.__name__, scores.mean(), scores.std(), scores, score_predict,
                 score_predict - scores.mean())
     return pipeline
 
@@ -304,56 +311,21 @@ def _predict_by_gender(X_test):
     return y[['Survived']]
 
 
-def _predict_knn(X_train, y_train, X_test=None):
-    X_train_knn = X_train[['Pclass', 'Sex', 'Age']]
-    # Prepare pipeline
-    column_trans = _column_transformer(X_train_knn.columns)
-    nca = NeighborhoodComponentsAnalysis(random_state=0)
-    model = _instantiate_clf('KNeighbors')
-    pipeline = make_pipeline(column_trans, nca, model)
-    # Train
-    pipeline.fit(X_train_knn, y_train)
-    scores = cross_val_score(pipeline, X_train_knn, y_train, cv=5, scoring='accuracy')
-    logger.info('%s - Score: %f+/-%f %s', type(model).__name__, scores.mean(), scores.std(), scores)
-    preds = _predict(pipeline, X_train_knn)
-    X_train = X_train.join(preds, rsuffix='KNN_')
-    # Predict
-    if X_test is not None:
-        X_test_knn = X_test[['Pclass', 'Sex', 'Age']]
-        preds = _predict(pipeline, X_test_knn)
-        X_test = X_test.join(preds, rsuffix='KNN_')
-    return X_train, X_test
-
-
-def search_params(training_set_file, test_set_file, algorithm):
-    # X, y = _read_csv(training_set_file, columns=COLUMNS)
-    X_train, y_train = _read_csv(training_set_file)
-    X_test, _ = _read_csv(test_set_file)
-    X_train, _ = _new_features(X_train, y_train, X_test)
-    # X_train = X_train[['FamilySurvived', 'Sex', 'Pclass', 'Age']]
-    X_train = X_train[COLUMNS]
-    model = _instantiate_clf(algorithm, use_best_params=False)
-    _search_params(X_train, y_train, model)
+def search_params(training_set_file, test_set_file, algorithms):
+    X_train, y_train, _ = _read_data(training_set_file, test_set_file)
+    for algorithm in algorithms:
+        model = _instantiate_clf(algorithm, use_best_params=False)
+        _search_params(X_train, y_train, model)
 
 
 def train(training_set_file, test_set_file, algorithms):
-    # X_train, y_train = _read_csv(training_set_file, columns=COLUMNS)
-    X_train, y_train = _read_csv(training_set_file)
-    X_test, _ = _read_csv(test_set_file)
-    X_train, _ = _new_features(X_train, y_train, X_test)
-    X_train = X_train[COLUMNS]
+    X_train, y_train, _ = _read_data(training_set_file, test_set_file)
     clf = _instantiate_clf(algorithms, use_best_params=True)
     _train(X_train, y_train, clf)
 
 
-def predict(training_set_file, test_set_file, algorithms, voting='soft'):
-    # X_train, y_train = _read_csv(training_set_file, columns=COLUMNS)
-    # X_test, _ = _read_csv(test_set_file, columns=COLUMNS)
-    X_train, y_train = _read_csv(training_set_file)
-    X_test, _ = _read_csv(test_set_file)
-    X_train, _ = _new_features(X_train, y_train, X_test)
-    X_train = X_train[COLUMNS]
-    X_test = X_test[COLUMNS]
+def predict(training_set_file, test_set_file, algorithms):
+    X_train, y_train, X_test = _read_data(training_set_file, test_set_file)
     # y = _predict_by_gender(X_test)
     clf = _instantiate_clf(algorithms, use_best_params=True)
     pipeline = _train(X_train, y_train, clf)
@@ -372,7 +344,7 @@ if __name__ == '__main__':
                         default='train')
     parser.add_argument('--training-set-file', help='Training set file', default='train.csv')
     parser.add_argument('--test-set-file', help='Test set file', default='test.csv')
-    parser.add_argument('--algorithm', help='Algorithms or comma-separated list of algorithms to be used',
+    parser.add_argument('--algorithms', help='Algorithm or comma-separated list of algorithms to be used',
                         required=True)
     args = parser.parse_args()
 
@@ -383,9 +355,10 @@ if __name__ == '__main__':
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
+    algorithms = args.algorithms.split(',')
     if args.command == 'train':
-        train(args.training_set_file, args.test_set_file, args.algorithm)
+        train(args.training_set_file, args.test_set_file, algorithms)
     elif args.command == 'predict':
-        predict(args.training_set_file, args.test_set_file, args.algorithm)
+        predict(args.training_set_file, args.test_set_file, algorithms)
     elif args.command == 'search-params':
-        search_params(args.training_set_file, args.test_set_file, args.algorithm)
+        search_params(args.training_set_file, args.test_set_file, algorithms)
