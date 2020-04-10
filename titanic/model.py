@@ -212,9 +212,12 @@ def _read_data(training_set_file, test_set_file):
     return X_train, y_train, X_test
 
 
-def _instantiate_clf(algorithms, use_best_params=True, voting=DEFAULT_VOTING):
-    """Return a classifier. If 'algorithms' is a list of strings a VotingClassifier is returned,  if it is a string,
-    a single classifier using that algorithm is returned.
+def _instantiate_clf(algorithms, weights=None, use_best_params=True, voting=DEFAULT_VOTING):
+    """Return a classifier.
+    If algorithms is a list of strings a VotingClassifier is returned,  if it is a string, a single classifier using
+    the given algorithm is returned.
+    The weights parameter must be the same length as the algorithms parameter, if it is None the VotingClassifier
+    uses uniform weights.
     """
     if isinstance(algorithms, str):
         algorithms = [algorithms]
@@ -229,7 +232,7 @@ def _instantiate_clf(algorithms, use_best_params=True, voting=DEFAULT_VOTING):
         clf = estimators[0][1]
     else:
         logger.info('Creating voting estimator: %s', voting)
-        clf = VotingClassifier(estimators=estimators, voting=voting)
+        clf = VotingClassifier(estimators=estimators, weights=weights, voting=voting, n_jobs=N_JOBS)
         estimators = [(estimator.__class__.__name__, estimator) for estimator in estimators]
     return clf
 
@@ -330,16 +333,16 @@ def search_params(training_set_file, test_set_file, algorithms):
         _search_params(X_train, y_train, model)
 
 
-def train(training_set_file, test_set_file, algorithms):
+def train(training_set_file, test_set_file, algorithms, weights=None):
     X_train, y_train, _ = _read_data(training_set_file, test_set_file)
-    clf = _instantiate_clf(algorithms, use_best_params=True)
+    clf = _instantiate_clf(algorithms, weights=weights)
     _train(X_train, y_train, clf)
 
 
-def predict(training_set_file, test_set_file, algorithms):
+def predict(training_set_file, test_set_file, algorithms, weights=None):
     X_train, y_train, X_test = _read_data(training_set_file, test_set_file)
     # y = _predict_by_gender(X_test)
-    clf = _instantiate_clf(algorithms, use_best_params=True)
+    clf = _instantiate_clf(algorithms, weights=weights)
     pipeline = _train(X_train, y_train, clf)
     y = _predict(pipeline, X_test)
     # y_family = _predict_by_family(training_set_file, test_set_file)
@@ -358,6 +361,7 @@ if __name__ == '__main__':
     parser.add_argument('--test-set-file', help='Test set file', default='test.csv')
     parser.add_argument('--algorithms', help='Algorithm or comma-separated list of algorithms to be used',
                         required=True)
+    parser.add_argument('--weights', help='Comma-separated list of weights of algorithms for voting, default to 1')
     args = parser.parse_args()
 
     logger.setLevel(logging.INFO)
@@ -368,9 +372,12 @@ if __name__ == '__main__':
     logger.addHandler(ch)
 
     algorithms = args.algorithms.split(',')
+    weights = args.weights.split(',') if args.weights is not None else None
+    if weights is not None and len(algorithms) != len(weights):
+        parser.error('--weights must have the same number of elements as --algorithms')
     if args.command == 'train':
-        train(args.training_set_file, args.test_set_file, algorithms)
+        train(args.training_set_file, args.test_set_file, algorithms, weights)
     elif args.command == 'predict':
-        predict(args.training_set_file, args.test_set_file, algorithms)
+        predict(args.training_set_file, args.test_set_file, algorithms, weights)
     elif args.command == 'search-params':
         search_params(args.training_set_file, args.test_set_file, algorithms)
