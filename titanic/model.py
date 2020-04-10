@@ -14,6 +14,7 @@ from sklearn.ensemble import (AdaBoostClassifier, GradientBoostingClassifier, Ra
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score, GridSearchCV
+from sklearn.svm import SVC
 from xgboost import XGBClassifier
 
 # Simple names to be used on the command line
@@ -25,6 +26,7 @@ CLF_CLASSES = {
     'KNeighbors': KNeighborsClassifier,
     'XGB': XGBClassifier,
     'LogisticRegression': LogisticRegression,
+    'SVC': SVC,
 }
 N_JOBS = -1  # Use all processors, particularly useful when param grid searching
 CV_FOLDS = 5
@@ -84,6 +86,11 @@ PARAM_GRIDS = {
         C=[0.01, 0.05, 0.1, 0.5, 1],
         max_iter=[1000],
     ),
+    SVC: dict(
+        C=[0.1, 1, 2],
+        kernel=['linear', 'rbf', 'sigmoid'],  # poly does not converge
+        gamma=['scale', 'auto'],
+    ),
 }
 BEST_PARAMS = {
     AdaBoostClassifier: dict(
@@ -132,6 +139,12 @@ BEST_PARAMS = {
     LogisticRegression: dict(
         C=0.5,
         max_iter=1000,
+        random_state=0,
+    ),
+    SVC: dict(
+        C=1,
+        kernel='linear',
+        gamma='scale',
         random_state=0,
     ),
 }
