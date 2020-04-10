@@ -38,10 +38,10 @@ PARAM_GRIDS = {
         learning_rate=[0.01, 0.1, 0.5, 1],
     ),
     GradientBoostingClassifier: dict(
-        n_estimators=[100, 500, 1000],
-        learning_rate=[0.1, 0.5, 0.7, 1],
+        n_estimators=[50, 100, 500],
+        learning_rate=[0.05, 0.1, 0.5, 1],
         subsample=[0.25, 0.5, 1],
-        max_depth=[2, 3],
+        max_depth=[2, 4, 6, 8, 10],
         # Regularization param fixed after manual tests comparing cross val and training set scores
         min_samples_leaf=[0.2],
     ),
@@ -54,12 +54,12 @@ PARAM_GRIDS = {
         min_samples_leaf=[0.01],
         n_jobs=[N_JOBS],
     ),
-    ExtraTreesClassifier: dict(
-        n_estimators=[10, 100, 500, 1000],
-        max_depth=[None, 10, 20],
+    ExtraTreesClassifier: dict(  # Public score: 0.81339
+        n_estimators=[100, 200, 500, 700, 1000],
+        max_depth=[None, 3, 5, 10],
         max_features=['auto', None],
         # Regularization param fixed after manual tests comparing cross val and training set scores
-        min_samples_leaf=[0.01],
+        # min_samples_leaf=[0.01],
         n_jobs=[N_JOBS],
     ),
     XGBClassifier: dict(
@@ -76,10 +76,9 @@ PARAM_GRIDS = {
         # reg_lambda=[0.01, 0.1, 1.0],
     ),
     KNeighborsClassifier: dict(
-        n_neighbors=[5, 10, 100],
+        n_neighbors=[6, 8, 10, 12, 15, 18, 20],
+        leaf_size=range(1, 50, 5),
         weights=['uniform', 'distance'],
-        metric=['minkowski', 'euclidean'],
-        p=[1, 2],
         n_jobs=[N_JOBS],
     ),
     LogisticRegression: dict(
@@ -93,22 +92,22 @@ PARAM_GRIDS = {
     ),
 }
 BEST_PARAMS = {
-    AdaBoostClassifier: dict(
+    AdaBoostClassifier: dict(  # Use GradientBoosting instead
         n_estimators=50,
         learning_rate=1,
         random_state=0,
     ),
-    GradientBoostingClassifier: dict(
-        n_estimators=500,
+    GradientBoostingClassifier: dict(  # Public score: 0.81339
+        n_estimators=50,
         learning_rate=0.5,
         subsample=1,
-        max_depth=2,
+        max_depth=8,
         # Regularization params
         # min_samples_split=0.1,
         min_samples_leaf=0.2,
         random_state=0,
     ),
-    RandomForestClassifier: dict(
+    RandomForestClassifier: dict(  # Use ExtraTrees instead
         n_estimators=1000,
         max_depth=20,
         max_features='auto',
@@ -117,31 +116,30 @@ BEST_PARAMS = {
         min_samples_leaf=0.01,
         random_state=0,
     ),
-    ExtraTreesClassifier: dict(
-        n_estimators=100,
-        max_depth=10,
+    ExtraTreesClassifier: dict(  # Public score: 0.81339
+        n_estimators=700,
+        max_depth=5,
         max_features=None,
-        # Regularization params
+        # Regularization params - no need to regularize, the difference between the cross val
+        # and training set errors is 1.8%.
         # min_samples_split=0.1,
-        min_samples_leaf=0.01,
+        # min_samples_leaf=0.01,
         random_state=0,
     ),
     XGBClassifier: dict(
         random_state=0,
     ),
-    KNeighborsClassifier: dict(
-        algorithm='auto',
-        n_neighbors=7,
-        leaf_size=26,
+    KNeighborsClassifier: dict(  # Public score: 0.72248
+        n_neighbors=6,
+        leaf_size=46,
         weights='uniform',
-        # metric='minkowski',
     ),
-    LogisticRegression: dict(
-        C=0.5,
+    LogisticRegression: dict(  # Public score: 0.77511
+        C=0.1,
         max_iter=1000,
         random_state=0,
     ),
-    SVC: dict(
+    SVC: dict(  # Public score: 0.77990
         C=1,
         kernel='linear',
         gamma='scale',
@@ -255,7 +253,8 @@ def _column_transformer(columns, remainder='drop'):
         'FarePerPerson': StandardScaler(),
     }
     logger.info('Preparing transformers for columns: %s', columns.tolist())
-    logger.info('Columns without transformers to be dropped: %s', columns.tolist() - imputers.keys())
+    to_drop = columns.tolist() - imputers.keys()
+    logger.info('Columns without transformers to be dropped: %s', to_drop if to_drop else 'none')
     transformers = [(imputers[col], [col]) for col in columns if col in imputers.keys()]
     return make_column_transformer(*transformers, remainder=remainder)
 
@@ -343,9 +342,9 @@ def predict(training_set_file, test_set_file, algorithms):
     clf = _instantiate_clf(algorithms, use_best_params=True)
     pipeline = _train(X_train, y_train, clf)
     y = _predict(pipeline, X_test)
-    y_family = _predict_by_family(training_set_file, test_set_file)
-    y.update(y_family)
-    y['Survived'] = y['Survived'].astype(int)  # Fix type after update https://github.com/pandas-dev/pandas/issues/4094
+    # y_family = _predict_by_family(training_set_file, test_set_file)
+    # y.update(y_family)
+    # y['Survived'] = y['Survived'].astype(int)  # Fix type after update https://github.com/pandas-dev/pandas/issues/4094
     y.to_csv(sys.stdout)
 
 
