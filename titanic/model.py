@@ -1,3 +1,16 @@
+"""This script provides different classifiers that can be combined on a VotingClassifier.
+
+The best score (0.81818) was achieved with the following classifiers and weights:
+
+- ExtraTrees (weight: 3)
+- GradientBoosting (weight: 1)
+- SVC (weight: 1)
+- LogisticRegression (weight: 1)
+- KNeighbors (weight: 1)
+
+This strategy means that all the predictions from ExtraTrees are used except when all the other
+classifiers disagree, which is a single case.
+"""
 import argparse
 import sys
 import logging
@@ -49,7 +62,6 @@ PARAM_GRIDS = {
         n_estimators=[10, 100, 500, 1000],
         max_depth=[None, 10, 20],
         max_features=['auto', None],
-        # max_features=[None],
         # Regularization param fixed after manual tests comparing cross val and training set scores
         min_samples_leaf=[0.01],
         n_jobs=[N_JOBS],
@@ -120,7 +132,7 @@ BEST_PARAMS = {
         n_estimators=700,
         max_depth=5,
         max_features=None,
-        # Regularization params - no need to regularize, the difference between the cross val
+        # Regularization params - do not regularize, the difference between the cross val
         # and training set errors is 1.8%.
         # min_samples_split=0.1,
         # min_samples_leaf=0.01,
@@ -143,6 +155,7 @@ BEST_PARAMS = {
         C=1,
         kernel='linear',
         gamma='scale',
+        probability=True,
         random_state=0,
     ),
 }
@@ -297,6 +310,7 @@ def _predict(pipeline, X):
 
 
 def _predict_by_family(training_set_file, test_set_file):
+    # Not used in the final solution
     # Solution based on https://www.kaggle.com/c/titanic/discussion/57447
     # Read data
     df_train, _ = _read_csv(training_set_file, split_X_y=False)
@@ -321,6 +335,7 @@ def _predict_by_family(training_set_file, test_set_file):
 
 
 def _predict_by_gender(X_test):
+    # Not used in the final solution
     y = X_test.copy()
     y['Survived'] = np.where(y['Sex'] == 'male', 0, 1)
     return y[['Survived']]
@@ -329,8 +344,8 @@ def _predict_by_gender(X_test):
 def search_params(training_set_file, test_set_file, algorithms):
     X_train, y_train, _ = _read_data(training_set_file, test_set_file)
     for algorithm in algorithms:
-        model = _instantiate_clf(algorithm, use_best_params=False)
-        _search_params(X_train, y_train, model)
+        clf = _instantiate_clf(algorithm, use_best_params=False)
+        _search_params(X_train, y_train, clf)
 
 
 def train(training_set_file, test_set_file, algorithms, weights=None):
@@ -341,13 +356,9 @@ def train(training_set_file, test_set_file, algorithms, weights=None):
 
 def predict(training_set_file, test_set_file, algorithms, weights=None):
     X_train, y_train, X_test = _read_data(training_set_file, test_set_file)
-    # y = _predict_by_gender(X_test)
     clf = _instantiate_clf(algorithms, weights=weights)
     pipeline = _train(X_train, y_train, clf)
     y = _predict(pipeline, X_test)
-    # y_family = _predict_by_family(training_set_file, test_set_file)
-    # y.update(y_family)
-    # y['Survived'] = y['Survived'].astype(int)  # Fix type after update https://github.com/pandas-dev/pandas/issues/4094
     y.to_csv(sys.stdout)
 
 
