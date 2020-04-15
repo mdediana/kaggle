@@ -1,34 +1,27 @@
 import argparse
 import os
+import sys
 import logging
 from datetime import datetime
 
 import pandas as pd
-from scipy.stats import reciprocal
-from sklearn.model_selection import RandomizedSearchCV
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.callbacks import TensorBoard, EarlyStopping
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import InputLayer, Dense
 from tensorflow.keras.optimizers import SGD
-from tensorflow.keras.wrappers.scikit_learn import KerasClassifier
+from kerastuner.tuners import RandomSearch
 
 
-CV_FOLDS = 5
 IMAGE_HEIGHT = 28
 IMAGE_WIDTH = 28
 NUMBER_OF_CLASSES = 10
 SCORING = 'accuracy'
-TENSORBOARD_LOG_DIR = os.path.join(os.curdir, 'logs', datetime.now().isoformat())
-PARAM_DISTRIBS = dict(
-    n_hidden=range(0, 5),
-    n_neurons=range(1, 500, 5),
-    learning_rate=reciprocal(0.001, 0.1),
-)
+TENSORBOARD_LOG_DIR = os.path.join(os.curdir, 'logs/tensorboard', datetime.now().isoformat())
+KERASTUNER_DIR = os.path.join(os.curdir, 'logs/kerastuner')
 BEST_PARAMS = dict(
-    n_hidden=2,
-    n_neurons=350,
-    learning_rate=0.037360088790406906
+    n_neurons=[449, 33],  # Neurons on each hidden layer
+    learning_rate=0.001
 )
 
 logger = logging.getLogger(__name__)
@@ -51,54 +44,82 @@ def _read_csv(filename, split_X_y=True):
 def _read_data(training_set_file, test_set_file):
     X_train, y_train = _read_csv(training_set_file)
     X_test, _ = _read_csv(test_set_file)
-    logger.info('X shape: %s', X_train.shape)
+    logger.info('X train shape: %s', X_train.shape)
+    logger.info('X test shape: %s', X_test.shape)
     return X_train, y_train, X_test
 
 
-def _build_model(n_hidden=1, n_neurons=30, learning_rate=3e-3):
+def _build_model(n_neurons=[30], learning_rate=3e-3):
     model = Sequential()
     model.add(InputLayer(input_shape=[IMAGE_HEIGHT * IMAGE_WIDTH]))
-    for layer in range(n_hidden):
-        model.add(Dense(n_neurons, activation='relu'))
+    for n in n_neurons:
+        model.add(Dense(n, activation='relu'))
     model.add(Dense(NUMBER_OF_CLASSES, activation='softmax'))
     optimizer = SGD(lr=learning_rate)
-    model.summary()
     model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=[SCORING])
+    model.summary()
     return model
 
 
-def _train(X, y, model):
-    callbacks = [TensorBoard(TENSORBOARD_LOG_DIR), EarlyStopping(patience=10)]
-    model.fit(X, y, epochs=10, batch_size=16, validation_split=0.1, verbose=2, callbacks=callbacks)
+def _build_model_tuner(hp):
+    model = Sequential()
+    model.add(InputLayer(input_shape=[IMAGE_HEIGHT * IMAGE_WIDTH]))
+    for i in range(hp.Int('num_layers', 0, 5)):
+        model.add(Dense(
+            units=hp.Int('units_' + str(i), min_value=1, max_value=512, step=32),
+            activation='relu'))
+    model.add(Dense(NUMBER_OF_CLASSES, activation='softmax'))
+    optimizer = SGD(lr=hp.Choice('learning_rate', [1e-2, 1e-3, 1e-4]))
+    model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=[SCORING])
+    model.summary()
+    return model
 
 
-def _predict(model, X):
-    y = model.predict_classes(X, verbose=0)
-    return pd.DataFrame({"ImageId": range(1, len(y) + 1), "Label": y})
-
-
-def train(training_set_file, test_set_file):
+def train(training_set_file, test_set_file, model_file=None):
     X_train, y_train, _ = _read_data(training_set_file, test_set_file)
-    clf = _build_model(**BEST_PARAMS)
-    _train(X_train, y_train, clf)
+    model = _build_model(**BEST_PARAMS)
+    callbacks = [TensorBoard(TENSORBOARD_LOG_DIR), EarlyStopping(patience=10)]
+    model.fit(X_train, y_train,
+              epochs=100,
+              batch_size=16,
+              validation_split=0.1,
+              verbose=2,
+              callbacks=callbacks)
+    if model_file is not None:
+        logger.info('Saving model to file: %s', model_file)
+        model.save(model_file)
+    return model
 
 
-def predict(training_set_file, test_set_file, output_file):
-    X_train, y_train, X_test = _read_data(training_set_file, test_set_file)
-    model = _build_model()
-    _train(X_train, y_train, model)
-    y = _predict(model, X_test)
-    y.to_csv(output_file, index=False)
+def predict(training_set_file, test_set_file, model_file=None, output_file=sys.stdout):
+    _, _, X_test = _read_data(training_set_file, test_set_file)
+    if model_file is None:
+        logger.info('Building and training model')
+        model = train(training_set_file, test_set_file, model_file)
+    else:
+        # TODO: Fix this
+        logger.info('Reading model from file: %s', model_file)
+        model = load_model(model_file)
+        model.summary()
+    y = model.predict_classes(X_test, verbose=0)
+    out_df = pd.DataFrame({"ImageId": range(1, len(y) + 1), "Label": y})
+    out_df.to_csv(output_file, index=False)
 
 
 def search_params(training_set_file, test_set_file):
     X_train, y_train, _ = _read_data(training_set_file, test_set_file)
-    model = KerasClassifier(_build_model)
-    # Do no use scikit-learn 0.22.x while https://github.com/keras-team/keras/pull/13598 is not fixed
-    cv = RandomizedSearchCV(model, PARAM_DISTRIBS, n_iter=10, cv=3, verbose=3, n_jobs=1)
-    _train(X_train, y_train, cv)
-    logger.info('Best score: %s', cv.best_score_)
-    logger.info('Best parameters: %s', cv.best_params_)
+    tuner = RandomSearch(_build_model_tuner,
+                         objective='val_accuracy',
+                         max_trials=5,
+                         executions_per_trial=2,
+                         directory=KERASTUNER_DIR,
+                         project_name='mnist')
+    tuner.search_space_summary()
+    tuner.search(X_train, y_train, epochs=10, batch_size=16, validation_split=0.1, verbose=2)
+    tuner.results_summary()
+    model = tuner.get_best_models(num_models=1)[0]
+    logger.info('Best model: ')
+    model.summary()
 
 
 if __name__ == '__main__':
@@ -108,6 +129,7 @@ if __name__ == '__main__':
     parser.add_argument('--training-set-file', help='Training set file', default='train.csv')
     parser.add_argument('--test-set-file', help='Test set file', default='test.csv')
     parser.add_argument('--output-file', help='Output file', default='output.csv')
+    parser.add_argument('--model-file', help='Model file')
     args = parser.parse_args()
 
     logger.setLevel(logging.INFO)
@@ -118,8 +140,8 @@ if __name__ == '__main__':
     logger.addHandler(ch)
 
     if args.command == 'train':
-        train(args.training_set_file, args.test_set_file)
+        train(args.training_set_file, args.test_set_file, args.model_file)
     elif args.command == 'predict':
-        predict(args.training_set_file, args.test_set_file, args.output_file)
+        predict(args.training_set_file, args.test_set_file, args.model_file, args.output_file)
     elif args.command == 'search-params':
         search_params(args.training_set_file, args.test_set_file)
