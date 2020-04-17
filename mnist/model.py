@@ -1,6 +1,5 @@
 import argparse
 import os
-import sys
 import logging
 from datetime import datetime
 
@@ -62,27 +61,20 @@ def _build_model(n_neurons=[30], learning_rate=3e-3):
 
 
 def _build_model_tuner(hp):
-    model = Sequential()
-    model.add(InputLayer(input_shape=[IMAGE_HEIGHT * IMAGE_WIDTH]))
-    for i in range(hp.Int('num_layers', 0, 5)):
-        model.add(Dense(
-            units=hp.Int('units_' + str(i), min_value=1, max_value=512, step=32),
-            activation='relu'))
-    model.add(Dense(NUMBER_OF_CLASSES, activation='softmax'))
-    optimizer = SGD(lr=hp.Choice('learning_rate', [1e-2, 1e-3, 1e-4]))
-    model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=[SCORING])
-    model.summary()
-    return model
+    n_neurons = [hp.Int('units_' + str(i), min_value=1, max_value=512, step=32)
+                 for i in range(hp.Int('num_layers', 0, 5))]
+    learning_rate = hp.Choice('learning_rate', [1e-2, 1e-3, 1e-4])
+    return _build_model(n_neurons, learning_rate)
 
 
-def train(training_set_file, test_set_file, model_file=None):
+def train(training_set_file, test_set_file, model_file=None, epochs=100, batch_size=16, validation_split=0.1):
     X_train, y_train, _ = _read_data(training_set_file, test_set_file)
     model = _build_model(**BEST_PARAMS)
     callbacks = [TensorBoard(TENSORBOARD_LOG_DIR), EarlyStopping(patience=10)]
     model.fit(X_train, y_train,
-              epochs=100,
-              batch_size=16,
-              validation_split=0.1,
+              epochs=epochs,
+              batch_size=batch_size,
+              validation_split=validation_split,
               verbose=2,
               callbacks=callbacks)
     if model_file is not None:
@@ -91,19 +83,21 @@ def train(training_set_file, test_set_file, model_file=None):
     return model
 
 
-def predict(training_set_file, test_set_file, model_file=None, output_file=sys.stdout):
+def predict(training_set_file, test_set_file, model_file=None, output_file=None):
     _, _, X_test = _read_data(training_set_file, test_set_file)
     if model_file is None:
         logger.info('Building and training model')
         model = train(training_set_file, test_set_file, model_file)
     else:
-        # TODO: Fix this
         logger.info('Reading model from file: %s', model_file)
         model = load_model(model_file)
         model.summary()
     y = model.predict_classes(X_test, verbose=0)
     out_df = pd.DataFrame({"ImageId": range(1, len(y) + 1), "Label": y})
-    out_df.to_csv(output_file, index=False)
+    if output_file is not None:
+        out_df.to_csv(output_file, index=False)
+    else:
+        logger.info('No output file set, number of predictions: %d', len(out_df))
 
 
 def search_params(training_set_file, test_set_file):
@@ -115,7 +109,11 @@ def search_params(training_set_file, test_set_file):
                          directory=KERASTUNER_DIR,
                          project_name='mnist')
     tuner.search_space_summary()
-    tuner.search(X_train, y_train, epochs=10, batch_size=16, validation_split=0.1, verbose=2)
+    tuner.search(X_train, y_train,
+                 epochs=10,
+                 batch_size=16,
+                 validation_split=0.1,
+                 verbose=2)
     tuner.results_summary()
     model = tuner.get_best_models(num_models=1)[0]
     logger.info('Best model: ')
@@ -128,8 +126,8 @@ if __name__ == '__main__':
                         default='train')
     parser.add_argument('--training-set-file', help='Training set file', default='train.csv')
     parser.add_argument('--test-set-file', help='Test set file', default='test.csv')
-    parser.add_argument('--output-file', help='Output file', default='output.csv')
-    parser.add_argument('--model-file', help='Model file')
+    parser.add_argument('--output-file', help='Output file')
+    parser.add_argument('--model-file', help='Model file, needs to have h5 file extension')
     args = parser.parse_args()
 
     logger.setLevel(logging.INFO)
@@ -139,6 +137,8 @@ if __name__ == '__main__':
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
+    if args.model_file is not None and not args.model_file.endswith('.h5'):
+        parser.error('Model file needs to have h5 file extension')
     if args.command == 'train':
         train(args.training_set_file, args.test_set_file, args.model_file)
     elif args.command == 'predict':

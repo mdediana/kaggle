@@ -133,3 +133,6 @@ dmypy.json
 
 # Logs
 logs/
+
+# HDF5
+*.h5
