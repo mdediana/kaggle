@@ -3,11 +3,13 @@ import os
 import logging
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
+from scipy import stats
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.callbacks import TensorBoard, EarlyStopping
 from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import InputLayer, Dense
+from tensorflow.keras.layers import InputLayer, Dense, Dropout
 from tensorflow.keras.optimizers import SGD
 from kerastuner.tuners import RandomSearch
 
@@ -15,15 +17,27 @@ from kerastuner.tuners import RandomSearch
 IMAGE_HEIGHT = 28
 IMAGE_WIDTH = 28
 NUMBER_OF_CLASSES = 10
+EPOCHS = 200
+BATCH_SIZE = 16
+VALIDATION_SPLIT = 0.1
 SCORING = 'accuracy'
+ACTIVATION = 'selu'
+KERNEL_INITIALIZER = 'lecun_uniform'
+MC_SAMPLES = 100
 TENSORBOARD_LOG_DIR = os.path.join(os.curdir, 'logs/tensorboard', datetime.now().isoformat())
 KERASTUNER_DIR = os.path.join(os.curdir, 'logs/kerastuner')
 BEST_PARAMS = dict(
-    n_neurons=[449, 33],  # Neurons on each hidden layer
-    learning_rate=0.001
+    n_neurons=[385, 257, 449],  # Neurons on each hidden layer
+    learning_rate=0.003,
+    dropout_rate=0.1,
 )
 
 logger = logging.getLogger(__name__)
+
+
+class MCDropout(Dropout):
+    def call(self, inputs):
+        return super().call(inputs, training=True)
 
 
 def _read_csv(filename, split_X_y=True):
@@ -48,13 +62,15 @@ def _read_data(training_set_file, test_set_file):
     return X_train, y_train, X_test
 
 
-def _build_model(n_neurons=[30], learning_rate=3e-3):
+def _build_model(n_neurons=[30], learning_rate=3e-3, dropout_rate=0.05):
     model = Sequential()
     model.add(InputLayer(input_shape=[IMAGE_HEIGHT * IMAGE_WIDTH]))
+    model.add(MCDropout(dropout_rate))
     for n in n_neurons:
-        model.add(Dense(n, activation='relu'))
+        model.add(Dense(n, activation=ACTIVATION, kernel_initializer=KERNEL_INITIALIZER))
+        model.add(MCDropout(dropout_rate))
     model.add(Dense(NUMBER_OF_CLASSES, activation='softmax'))
-    optimizer = SGD(lr=learning_rate)
+    optimizer = SGD(lr=learning_rate, momentum=0.9, nesterov=True)
     model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=[SCORING])
     model.summary()
     return model
@@ -63,11 +79,13 @@ def _build_model(n_neurons=[30], learning_rate=3e-3):
 def _build_model_tuner(hp):
     n_neurons = [hp.Int('units_' + str(i), min_value=1, max_value=512, step=32)
                  for i in range(hp.Int('num_layers', 0, 5))]
-    learning_rate = hp.Choice('learning_rate', [1e-2, 1e-3, 1e-4])
-    return _build_model(n_neurons, learning_rate)
+    learning_rate = hp.Choice('learning_rate', [1e-3, 3e-3, 5e-3])
+    dropout_rate = hp.Choice('dropout_rate', [0.05, 0.1, 0.15])
+    return _build_model(n_neurons, learning_rate, dropout_rate)
 
 
-def train(training_set_file, test_set_file, model_file=None, epochs=100, batch_size=16, validation_split=0.1):
+def train(training_set_file, test_set_file, model_file=None, epochs=EPOCHS, batch_size=BATCH_SIZE,
+          validation_split=VALIDATION_SPLIT):
     X_train, y_train, _ = _read_data(training_set_file, test_set_file)
     model = _build_model(**BEST_PARAMS)
     callbacks = [TensorBoard(TENSORBOARD_LOG_DIR), EarlyStopping(patience=10)]
@@ -90,9 +108,11 @@ def predict(training_set_file, test_set_file, model_file=None, output_file=None)
         model = train(training_set_file, test_set_file, model_file)
     else:
         logger.info('Reading model from file: %s', model_file)
-        model = load_model(model_file)
+        model = load_model(model_file, custom_objects={'MCDropout': MCDropout})
         model.summary()
-    y = model.predict_classes(X_test, verbose=0)
+    logger.info('Predict using mode of %d Monte Carlo runs', MC_SAMPLES)
+    ys = np.stack([model.predict_classes(X_test) for i in range(MC_SAMPLES)])
+    y = stats.mode(ys).mode.flatten()
     out_df = pd.DataFrame({"ImageId": range(1, len(y) + 1), "Label": y})
     if output_file is not None:
         out_df.to_csv(output_file, index=False)
@@ -110,9 +130,9 @@ def search_params(training_set_file, test_set_file):
                          project_name='mnist')
     tuner.search_space_summary()
     tuner.search(X_train, y_train,
-                 epochs=10,
-                 batch_size=16,
-                 validation_split=0.1,
+                 epochs=EPOCHS,
+                 batch_size=BATCH_SIZE,
+                 validation_split=VALIDATION_SPLIT,
                  verbose=2)
     tuner.results_summary()
     model = tuner.get_best_models(num_models=1)[0]
