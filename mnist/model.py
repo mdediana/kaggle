@@ -9,14 +9,15 @@ from scipy import stats
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.callbacks import TensorBoard, EarlyStopping
 from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import InputLayer, Dense, Dropout
+from tensorflow.keras.layers import Flatten, InputLayer, Dense, Dropout, Conv2D, MaxPooling2D
 from tensorflow.keras.optimizers import SGD
 from kerastuner.tuners import RandomSearch
 
 
 IMAGE_HEIGHT = 28
 IMAGE_WIDTH = 28
-NUMBER_OF_CLASSES = 10
+NUM_CHANNELS = 1
+NUM_CLASSES = 10
 EPOCHS = 200
 BATCH_SIZE = 16
 VALIDATION_SPLIT = 0.1
@@ -40,7 +41,7 @@ class MCDropout(Dropout):
         return super().call(inputs, training=True)
 
 
-def _read_csv(filename, split_X_y=True):
+def _read_csv(filename, is_2d=False, split_X_y=True):
     """Return X, y if training data or X, None if test data"""
     df = pd.read_csv(filename)
     if split_X_y and 'label' in df:
@@ -50,26 +51,45 @@ def _read_csv(filename, split_X_y=True):
         X = df
         y = None
     # Scale pixels (min 0, max 255)
-    X = X / 255.0
+    X /= 255.0
+    if is_2d:
+        X = X.values.reshape(len(X), IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CHANNELS)  # X turned into a ndarray
     return X, y
 
 
-def _read_data(training_set_file, test_set_file):
-    X_train, y_train = _read_csv(training_set_file)
-    X_test, _ = _read_csv(test_set_file)
+def _read_data(training_set_file, test_set_file, is_2d=False):
+    X_train, y_train = _read_csv(training_set_file, is_2d)
+    X_test, _ = _read_csv(test_set_file, is_2d)
     logger.info('X train shape: %s', X_train.shape)
     logger.info('X test shape: %s', X_test.shape)
     return X_train, y_train, X_test
 
 
-def _build_model(n_neurons=[30], learning_rate=3e-3, dropout_rate=0.05):
+def _build_model_dense(n_neurons=[30], learning_rate=3e-3, dropout_rate=0.05):
     model = Sequential()
     model.add(InputLayer(input_shape=[IMAGE_HEIGHT * IMAGE_WIDTH]))
     model.add(MCDropout(dropout_rate))
     for n in n_neurons:
         model.add(Dense(n, activation=ACTIVATION, kernel_initializer=KERNEL_INITIALIZER))
         model.add(MCDropout(dropout_rate))
-    model.add(Dense(NUMBER_OF_CLASSES, activation='softmax'))
+    model.add(Dense(NUM_CLASSES, activation='softmax'))
+    optimizer = SGD(lr=learning_rate, momentum=0.9, nesterov=True)
+    model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=[SCORING])
+    model.summary()
+    return model
+
+
+def _build_model(learning_rate=3e-3):  # Score: 0.98842
+    model = Sequential()
+    model.add(Conv2D(filters=32, kernel_size=(3, 3), strides=1, padding='same', activation='relu',
+                     input_shape=(IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CHANNELS)))
+    model.add(Conv2D(filters=64, kernel_size=(3, 3), activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(MCDropout(0.25))
+    model.add(Flatten())
+    model.add(Dense(128, activation='relu', kernel_initializer='glorot_uniform'))
+    model.add(MCDropout(0.5))
+    model.add(Dense(NUM_CLASSES, activation='softmax'))
     optimizer = SGD(lr=learning_rate, momentum=0.9, nesterov=True)
     model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=[SCORING])
     model.summary()
@@ -81,13 +101,13 @@ def _build_model_tuner(hp):
                  for i in range(hp.Int('num_layers', 0, 5))]
     learning_rate = hp.Choice('learning_rate', [1e-3, 3e-3, 5e-3])
     dropout_rate = hp.Choice('dropout_rate', [0.05, 0.1, 0.15])
-    return _build_model(n_neurons, learning_rate, dropout_rate)
+    return _build_model_dense(n_neurons, learning_rate, dropout_rate)
 
 
 def train(training_set_file, test_set_file, model_file=None, epochs=EPOCHS, batch_size=BATCH_SIZE,
           validation_split=VALIDATION_SPLIT):
-    X_train, y_train, _ = _read_data(training_set_file, test_set_file)
-    model = _build_model(**BEST_PARAMS)
+    X_train, y_train, _ = _read_data(training_set_file, test_set_file, is_2d=True)
+    model = _build_model()
     callbacks = [TensorBoard(TENSORBOARD_LOG_DIR), EarlyStopping(patience=10)]
     model.fit(X_train, y_train,
               epochs=epochs,
@@ -102,7 +122,7 @@ def train(training_set_file, test_set_file, model_file=None, epochs=EPOCHS, batc
 
 
 def predict(training_set_file, test_set_file, model_file=None, output_file=None):
-    _, _, X_test = _read_data(training_set_file, test_set_file)
+    _, _, X_test = _read_data(training_set_file, test_set_file, is_2d=True)
     if model_file is None:
         logger.info('Building and training model')
         model = train(training_set_file, test_set_file, model_file)
