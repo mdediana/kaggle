@@ -41,7 +41,7 @@ class MCDropout(Dropout):
         return super().call(inputs, training=True)
 
 
-def _read_csv(filename, is_2d=False, split_X_y=True):
+def _read_csv(filename, split_X_y=True):
     """Return X, y if training data or X, None if test data"""
     df = pd.read_csv(filename)
     if split_X_y and 'label' in df:
@@ -50,10 +50,8 @@ def _read_csv(filename, is_2d=False, split_X_y=True):
     else:
         X = df
         y = None
-    # Scale pixels (min 0, max 255)
-    X /= 255.0
-    if is_2d:
-        X = X.values.reshape(len(X), IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CHANNELS)  # X turned into a ndarray
+    X /= 255.0   # Scale pixels (min 0, max 255)
+    X = X.values.reshape(len(X), IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CHANNELS)  # X turned into a ndarray
     return X, y
 
 
@@ -79,17 +77,24 @@ def _build_model_dense(n_neurons=[30], learning_rate=3e-3, dropout_rate=0.05):
     return model
 
 
-def _build_model(learning_rate=3e-3):  # Score: 0.98842
-    model = Sequential()
-    model.add(Conv2D(filters=32, kernel_size=(3, 3), strides=1, padding='same', activation='relu',
-                     input_shape=(IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CHANNELS)))
-    model.add(Conv2D(filters=64, kernel_size=(3, 3), activation='relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(MCDropout(0.25))
-    model.add(Flatten())
-    model.add(Dense(128, activation='relu', kernel_initializer='glorot_uniform'))
-    model.add(MCDropout(0.5))
-    model.add(Dense(NUM_CLASSES, activation='softmax'))
+def _build_model(learning_rate=3e-3):  # Score: 0.99071
+    model = Sequential([
+        Conv2D(filters=64, kernel_size=7, strides=1, padding='same', activation='relu',
+               input_shape=(IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CHANNELS)),
+        MaxPooling2D(pool_size=2),
+        Conv2D(filters=128, kernel_size=3, padding='same', activation='relu'),
+        Conv2D(filters=128, kernel_size=3, padding='same', activation='relu'),
+        MaxPooling2D(pool_size=2),
+        Conv2D(filters=256, kernel_size=3, padding='same', activation='relu'),
+        Conv2D(filters=256, kernel_size=3, padding='same', activation='relu'),
+        MaxPooling2D(pool_size=2),
+        Flatten(),
+        Dense(128, activation='relu'),
+        MCDropout(0.5),
+        Dense(64, activation='relu'),
+        MCDropout(0.5),
+        Dense(NUM_CLASSES, activation='softmax')
+    ])
     optimizer = SGD(lr=learning_rate, momentum=0.9, nesterov=True)
     model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=[SCORING])
     model.summary()
