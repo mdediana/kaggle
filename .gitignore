@@ -137,3 +137,6 @@ logs/
 # Tensorflow files
 *.h5
 *.tf_records
+
+# VSCode
+.vscode/
