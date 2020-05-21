@@ -134,6 +134,5 @@ dmypy.json
 # Logs
 logs/
 
-# Tensorflow files
+# HDF5
 *.h5
-*.tf_records
