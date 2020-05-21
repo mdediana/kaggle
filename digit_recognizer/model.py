@@ -41,7 +41,6 @@ def _read_csv(filename, split_X_y=True):
     else:
         X = df
         y = None
-    X /= 255.0   # Scale pixels (min 0, max 255)
     X = X.values.reshape(len(X), IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CHANNELS)  # X turned into a ndarray
     return X, y
 
@@ -73,17 +72,9 @@ def _build_model(learning_rate=3e-3):  # Score: 0.99071
         Dense(NUM_CLASSES, activation='softmax')
     ])
     optimizer = SGD(lr=learning_rate, momentum=0.9, nesterov=True)
-    model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=[SCORING])
+    model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=['accuracy'])
     model.summary()
     return model
-
-
-def _build_model_tuner(hp):
-    n_neurons = [hp.Int('units_' + str(i), min_value=1, max_value=512, step=32)
-                 for i in range(hp.Int('num_layers', 0, 5))]
-    learning_rate = hp.Choice('learning_rate', [1e-3, 3e-3, 5e-3])
-    dropout_rate = hp.Choice('dropout_rate', [0.05, 0.1, 0.15])
-    return _build_model_dense(n_neurons, learning_rate, dropout_rate)
 
 
 def train(training_set_file, test_set_file, model_file=None, epochs=EPOCHS, batch_size=BATCH_SIZE,
@@ -91,10 +82,18 @@ def train(training_set_file, test_set_file, model_file=None, epochs=EPOCHS, batc
     X_train, y_train, _ = _read_data(training_set_file, test_set_file, is_2d=True)
     model = _build_model()
     callbacks = [TensorBoard(TENSORBOARD_LOG_DIR), EarlyStopping(patience=10)]
-    model.fit(X_train, y_train,
+    img_gen = tf.keras.preprocessing.image.ImageDataGenerator(
+        rotation_range=20,
+        width_shift_range=0.2,
+        height_shift_range=0.2,
+        shear_range=0.2,
+        zoom_range=0.2,
+        rescale=1./255,
+        validation_split=VALIDATION_SPLIT,
+    )
+    model.fit(img_gen.flow(X_train, y_train, batch_size=BATCH_SIZE),
               epochs=epochs,
               batch_size=batch_size,
-              validation_split=validation_split,
               verbose=2,
               callbacks=callbacks)
     if model_file is not None:
