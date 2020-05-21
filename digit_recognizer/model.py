@@ -6,12 +6,12 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from scipy import stats
+import tensorflow as tf
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.callbacks import TensorBoard, EarlyStopping
 from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import Flatten, InputLayer, Dense, Dropout, Conv2D, MaxPooling2D
+from tensorflow.keras.layers import Flatten, Dense, Dropout, Conv2D, MaxPooling2D
 from tensorflow.keras.optimizers import SGD
-from kerastuner.tuners import RandomSearch
 
 
 IMAGE_HEIGHT = 28
@@ -21,17 +21,8 @@ NUM_CLASSES = 10
 EPOCHS = 200
 BATCH_SIZE = 16
 VALIDATION_SPLIT = 0.1
-SCORING = 'accuracy'
-ACTIVATION = 'selu'
-KERNEL_INITIALIZER = 'lecun_uniform'
 MC_SAMPLES = 100
 TENSORBOARD_LOG_DIR = os.path.join(os.curdir, 'logs/tensorboard', datetime.now().isoformat())
-KERASTUNER_DIR = os.path.join(os.curdir, 'logs/kerastuner')
-BEST_PARAMS = dict(
-    n_neurons=[385, 257, 449],  # Neurons on each hidden layer
-    learning_rate=0.003,
-    dropout_rate=0.1,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -61,20 +52,6 @@ def _read_data(training_set_file, test_set_file, is_2d=False):
     logger.info('X train shape: %s', X_train.shape)
     logger.info('X test shape: %s', X_test.shape)
     return X_train, y_train, X_test
-
-
-def _build_model_dense(n_neurons=[30], learning_rate=3e-3, dropout_rate=0.05):
-    model = Sequential()
-    model.add(InputLayer(input_shape=[IMAGE_HEIGHT * IMAGE_WIDTH]))
-    model.add(MCDropout(dropout_rate))
-    for n in n_neurons:
-        model.add(Dense(n, activation=ACTIVATION, kernel_initializer=KERNEL_INITIALIZER))
-        model.add(MCDropout(dropout_rate))
-    model.add(Dense(NUM_CLASSES, activation='softmax'))
-    optimizer = SGD(lr=learning_rate, momentum=0.9, nesterov=True)
-    model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=[SCORING])
-    model.summary()
-    return model
 
 
 def _build_model(learning_rate=3e-3):  # Score: 0.99071
@@ -145,26 +122,6 @@ def predict(training_set_file, test_set_file, model_file=None, output_file=None)
         logger.info('No output file set, number of predictions: %d', len(out_df))
 
 
-def search_params(training_set_file, test_set_file):
-    X_train, y_train, _ = _read_data(training_set_file, test_set_file)
-    tuner = RandomSearch(_build_model_tuner,
-                         objective='val_accuracy',
-                         max_trials=5,
-                         executions_per_trial=2,
-                         directory=KERASTUNER_DIR,
-                         project_name='mnist')
-    tuner.search_space_summary()
-    tuner.search(X_train, y_train,
-                 epochs=EPOCHS,
-                 batch_size=BATCH_SIZE,
-                 validation_split=VALIDATION_SPLIT,
-                 verbose=2)
-    tuner.results_summary()
-    model = tuner.get_best_models(num_models=1)[0]
-    logger.info('Best model: ')
-    model.summary()
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Recognize digits in the MNIST dataset')
     parser.add_argument('command', help='Command to run', choices=['train', 'predict', 'search-params'],
@@ -188,5 +145,3 @@ if __name__ == '__main__':
         train(args.training_set_file, args.test_set_file, args.model_file)
     elif args.command == 'predict':
         predict(args.training_set_file, args.test_set_file, args.model_file, args.output_file)
-    elif args.command == 'search-params':
-        search_params(args.training_set_file, args.test_set_file)
