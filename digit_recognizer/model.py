@@ -41,10 +41,9 @@ class MCDropout(Dropout):
         return super().call(inputs, training=True)
 
 
-def _read_csv(filename, split_X_y=True):
-    """Return X, y if training data or X, None if test data"""
+def _read_csv(filename):
     df = pd.read_csv(filename)
-    if split_X_y and 'label' in df:
+    if 'label' in df:
         X = df.drop(columns=['label'])
         y = to_categorical(df['label'])
     else:
@@ -54,15 +53,9 @@ def _read_csv(filename, split_X_y=True):
     return X, y
 
 
-def _read_data(training_set_file, test_set_file, is_2d=False):
-    X_train, y_train = _read_csv(training_set_file, is_2d)
-    X_test, _ = _read_csv(test_set_file, is_2d)
-    return X_train, y_train, X_test
-
-
 def _build_model(learning_rate=3e-3):
     model = Sequential([
-        Conv2D(filters=64, kernel_size=7, strides=1, padding='same', activation='relu',
+        Conv2D(filters=64, kernel_size=7, padding='same', activation='relu',
                input_shape=(IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CHANNELS)),
         MaxPooling2D(pool_size=2),
         Conv2D(filters=128, kernel_size=3, padding='same', activation='relu'),
@@ -114,7 +107,7 @@ def _build_image_generator():
 
 def train(training_set_file, test_set_file, model_file=None, epochs=EPOCHS, batch_size=BATCH_SIZE,
           validation_split=VALIDATION_SPLIT):
-    X_train, y_train, _ = _read_data(training_set_file, test_set_file, is_2d=True)
+    X_train, y_train = _read_csv(training_set_file)
     model = _build_model()
     img_gen = _build_image_generator()
     callbacks = _build_callbacks()
@@ -129,7 +122,7 @@ def train(training_set_file, test_set_file, model_file=None, epochs=EPOCHS, batc
 
 
 def predict(training_set_file, test_set_file, model_file=None, output_file=None):
-    _, _, X_test = _read_data(training_set_file, test_set_file, is_2d=True)
+    X_test, _ = _read_csv(test_set_file)
     if model_file is None:
         model = train(training_set_file, test_set_file, model_file)
     else:
