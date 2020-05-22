@@ -17,8 +17,8 @@ IMAGE_HEIGHT = 28
 IMAGE_WIDTH = 28
 NUM_CHANNELS = 1
 NUM_CLASSES = 10
-EPOCHS = 200
-BATCH_SIZE = 16
+EPOCHS = 500
+BATCH_SIZE = 32
 VALIDATION_SPLIT = 0.1
 MC_SAMPLES = 100
 # Use an arbitrary Kaggle env var to define if we are local or in Kaggle
@@ -65,7 +65,7 @@ def _read_data(training_set_file, test_set_file, is_2d=False):
     return X_train, y_train, X_test
 
 
-def _build_model(learning_rate=3e-3):  # Score: 0.99071
+def _build_model(learning_rate=3e-3):
     model = Sequential([
         Conv2D(filters=64, kernel_size=7, strides=1, padding='same', activation='relu',
                input_shape=(IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CHANNELS)),
