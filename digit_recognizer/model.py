@@ -1,6 +1,5 @@
 import argparse
 import os
-import logging
 from datetime import datetime
 
 import numpy as np
@@ -36,8 +35,6 @@ else:
     OUTPUT_FILE = os.path.join(os.curdir, 'predicted.csv')
     TENSORBOARD_LOG_DIR = os.path.join(os.curdir, 'logs/tensorboard', datetime.now().isoformat())
 
-logger = logging.getLogger(__name__)
-
 
 class MCDropout(Dropout):
     def call(self, inputs):
@@ -60,8 +57,6 @@ def _read_csv(filename, split_X_y=True):
 def _read_data(training_set_file, test_set_file, is_2d=False):
     X_train, y_train = _read_csv(training_set_file, is_2d)
     X_test, _ = _read_csv(test_set_file, is_2d)
-    logger.info('X train shape: %s', X_train.shape)
-    logger.info('X test shape: %s', X_test.shape)
     return X_train, y_train, X_test
 
 
@@ -129,7 +124,6 @@ def train(training_set_file, test_set_file, model_file=None, epochs=EPOCHS, batc
               verbose=2,
               callbacks=callbacks)
     if model_file is not None:
-        logger.info('Saving model to file: %s', model_file)
         model.save(model_file)
     return model
 
@@ -137,20 +131,15 @@ def train(training_set_file, test_set_file, model_file=None, epochs=EPOCHS, batc
 def predict(training_set_file, test_set_file, model_file=None, output_file=None):
     _, _, X_test = _read_data(training_set_file, test_set_file, is_2d=True)
     if model_file is None:
-        logger.info('Building and training model')
         model = train(training_set_file, test_set_file, model_file)
     else:
-        logger.info('Reading model from file: %s', model_file)
         model = load_model(model_file, custom_objects={'MCDropout': MCDropout})
         model.summary()
-    logger.info('Predict using mode of %d Monte Carlo runs', MC_SAMPLES)
     ys = np.stack([model.predict_classes(X_test) for i in range(MC_SAMPLES)])
     y = stats.mode(ys).mode.flatten()
     out_df = pd.DataFrame({"ImageId": range(1, len(y) + 1), "Label": y})
     if output_file is not None:
         out_df.to_csv(output_file, index=False)
-    else:
-        logger.info('No output file set, number of predictions: %d', len(out_df))
 
 
 def main():
@@ -171,13 +160,6 @@ def main():
 
 
 if __name__ == '__main__':
-    logger.setLevel(logging.INFO)
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
-
     if ENV == 'LOCAL':
         main()
     else:
