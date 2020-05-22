@@ -22,7 +22,20 @@ EPOCHS = 200
 BATCH_SIZE = 16
 VALIDATION_SPLIT = 0.1
 MC_SAMPLES = 100
-TENSORBOARD_LOG_DIR = os.path.join(os.curdir, 'logs/tensorboard', datetime.now().isoformat())
+# Use an arbitrary Kaggle env var to define if we are local or in Kaggle
+ENV = 'KAGGLE' if 'KAGGLE_CONTAINER_NAME' in os.environ else 'LOCAL'
+if ENV == 'KAGGLE':
+    TRAIN_FILE = '/kaggle/input/digit-recognizer/train.csv'
+    TEST_FILE = '/kaggle/input/digit-recognizer/test.csv'
+    MODEL_FILE = '/kaggle/working/model.h5'
+    OUTPUT_FILE = '/kaggle/working/predicted.csv'
+    TENSORBOARD_LOG_DIR = None
+else:
+    TRAIN_FILE = os.path.join(os.curdir, 'train.csv')
+    TEST_FILE = os.path.join(os.curdir, 'test.csv')
+    MODEL_FILE = os.path.join(os.curdir, 'model.h5')
+    OUTPUT_FILE = os.path.join(os.curdir, 'predicted.csv')
+    TENSORBOARD_LOG_DIR = os.path.join(os.curdir, 'logs/tensorboard', datetime.now().isoformat())
 
 logger = logging.getLogger(__name__)
 
@@ -121,22 +134,14 @@ def predict(training_set_file, test_set_file, model_file=None, output_file=None)
         logger.info('No output file set, number of predictions: %d', len(out_df))
 
 
-if __name__ == '__main__':
+def main():
     parser = argparse.ArgumentParser(description='Recognize digits in the MNIST dataset')
-    parser.add_argument('command', help='Command to run', choices=['train', 'predict', 'search-params'],
-                        default='train')
-    parser.add_argument('--training-set-file', help='Training set file', default='train.csv')
-    parser.add_argument('--test-set-file', help='Test set file', default='test.csv')
-    parser.add_argument('--output-file', help='Output file')
-    parser.add_argument('--model-file', help='Model file, needs to have h5 file extension')
+    parser.add_argument('command', help='Command to run', choices=['train', 'predict'], default='train')
+    parser.add_argument('--training-set-file', help='Training set file', default=TRAIN_FILE)
+    parser.add_argument('--test-set-file', help='Test set file', default=TEST_FILE)
+    parser.add_argument('--output-file', help='Output file', default=OUTPUT_FILE)
+    parser.add_argument('--model-file', help='Model file, needs to have h5 file extension', default=MODEL_FILE)
     args = parser.parse_args()
-
-    logger.setLevel(logging.INFO)
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
 
     if args.model_file is not None and not args.model_file.endswith('.h5'):
         parser.error('Model file needs to have h5 file extension')
@@ -144,3 +149,18 @@ if __name__ == '__main__':
         train(args.training_set_file, args.test_set_file, args.model_file)
     elif args.command == 'predict':
         predict(args.training_set_file, args.test_set_file, args.model_file, args.output_file)
+
+
+if __name__ == '__main__':
+    logger.setLevel(logging.INFO)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+    if ENV == 'LOCAL':
+        main()
+    else:
+        train(TRAIN_FILE, TEST_FILE, MODEL_FILE)
+        predict(TRAIN_FILE, TEST_FILE, MODEL_FILE, OUTPUT_FILE)
