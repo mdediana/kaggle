@@ -8,7 +8,6 @@ import pandas as pd
 from scipy import stats
 import tensorflow as tf
 from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.callbacks import TensorBoard, EarlyStopping
 from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import Flatten, Dense, Dropout, Conv2D, MaxPooling2D
 from tensorflow.keras.optimizers import SGD
@@ -90,23 +89,43 @@ def _build_model(learning_rate=3e-3):  # Score: 0.99071
     return model
 
 
-def train(training_set_file, test_set_file, model_file=None, epochs=EPOCHS, batch_size=BATCH_SIZE,
-          validation_split=VALIDATION_SPLIT):
-    X_train, y_train, _ = _read_data(training_set_file, test_set_file, is_2d=True)
-    model = _build_model()
-    callbacks = [TensorBoard(TENSORBOARD_LOG_DIR), EarlyStopping(patience=10)]
-    img_gen = tf.keras.preprocessing.image.ImageDataGenerator(
+def _build_callbacks():
+    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+        monitor='val_accuracy',
+        factor=0.5,
+        verbose=1,
+        patience=5)
+    early_stopping = tf.keras.callbacks.EarlyStopping(
+        monitor='val_accuracy',
+        restore_best_weights=True,
+        verbose=1,
+        patience=10)
+    callbacks = [reduce_lr, early_stopping]
+    if ENV == 'LOCAL':
+        callbacks.append(tf.keras.callbacks.TensorBoard(TENSORBOARD_LOG_DIR))
+    return callbacks
+
+
+def _build_image_generator():
+    return tf.keras.preprocessing.image.ImageDataGenerator(
         rotation_range=20,
         width_shift_range=0.2,
         height_shift_range=0.2,
         shear_range=0.2,
         zoom_range=0.2,
         rescale=1./255,
-        validation_split=VALIDATION_SPLIT,
-    )
-    model.fit(img_gen.flow(X_train, y_train, batch_size=BATCH_SIZE),
+        validation_split=VALIDATION_SPLIT)
+
+
+def train(training_set_file, test_set_file, model_file=None, epochs=EPOCHS, batch_size=BATCH_SIZE,
+          validation_split=VALIDATION_SPLIT):
+    X_train, y_train, _ = _read_data(training_set_file, test_set_file, is_2d=True)
+    model = _build_model()
+    img_gen = _build_image_generator()
+    callbacks = _build_callbacks()
+    model.fit(img_gen.flow(X_train, y_train, batch_size=BATCH_SIZE, subset='training'),
+              validation_data=img_gen.flow(X_train, y_train, batch_size=BATCH_SIZE, subset='validation'),
               epochs=epochs,
-              batch_size=batch_size,
               verbose=2,
               callbacks=callbacks)
     if model_file is not None:
